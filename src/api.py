@@ -221,9 +221,15 @@ def _run_pipeline(
     candidates = [c for c, _ in retrieved]
     print(f"  ✓ Retrieved {len(candidates)} candidates for re-ranking", flush=True)
 
-    # 3. Constraint engine
+    # 3. Constraint engine — run all candidates in parallel
     print("→ Running constraint engine...", flush=True)
-    constraint_results = {c.id: run_constraint_engine(job, c) for c in candidates}
+    from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+    constraint_results: dict[str, object] = {}
+    with ThreadPoolExecutor(max_workers=min(len(candidates), 20)) as pool:
+        futures = {pool.submit(run_constraint_engine, job, c): c.id for c in candidates}
+        for future in _as_completed(futures):
+            cid = futures[future]
+            constraint_results[cid] = future.result()
     eliminated = sum(1 for r in constraint_results.values() if r.eliminated)
     print(f"  ✓ {eliminated}/{len(candidates)} candidates eliminated", flush=True)
 

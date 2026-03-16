@@ -144,24 +144,33 @@ def generate_explanations_for_pipeline(
     pipeline_result: PipelineResult,
     top_n: int = 10,
 ) -> PipelineResult:
-    """Populate .explanation fields for the top-N ranked candidates (in-place).
+    """Populate .explanation fields for the top-N ranked candidates in parallel.
 
-    Eliminated candidates get a structured string (no LLM call) per task 7.4.
-    Candidates ranked beyond top_n get an empty explanation.
-
-    Returns the same PipelineResult with explanations populated.
+    Uses ThreadPoolExecutor so all LLM calls fire concurrently rather than
+    sequentially. Wall-clock time drops from N × latency to ~1 × latency.
     """
-    # Top-N ranked candidates → LLM explanation
-    for i, sc in enumerate(pipeline_result.ranked_candidates):
-        if i >= top_n:
-            break
-        candidate = candidates_by_id.get(sc.candidate_id)
-        if candidate is None:
-            continue
-        print(f"    [explain] {candidate.name}...", flush=True)
-        sc.explanation = generate_explanation(
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    top_candidates = [
+        (i, sc)
+        for i, sc in enumerate(pipeline_result.ranked_candidates)
+        if i < top_n and candidates_by_id.get(sc.candidate_id) is not None
+    ]
+
+    print(f"    [explain] Generating {len(top_candidates)} explanations in parallel...", flush=True)
+
+    def _explain(item: tuple[int, object]) -> tuple[int, str]:
+        i, sc = item
+        candidate = candidates_by_id[sc.candidate_id]
+        return i, generate_explanation(
             job, candidate, sc.feature_vector, sc.constraint_result, sc.score
         )
+
+    with ThreadPoolExecutor(max_workers=min(len(top_candidates), 10)) as pool:
+        futures = {pool.submit(_explain, item): item for item in top_candidates}
+        for future in as_completed(futures):
+            i, explanation = future.result()
+            pipeline_result.ranked_candidates[i].explanation = explanation
 
     return pipeline_result
 
