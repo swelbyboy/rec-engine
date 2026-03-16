@@ -1,4 +1,4 @@
-import type { RecommendResult } from "../types";
+import type { RecommendResult, StreamEvent } from "../types";
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
@@ -28,4 +28,35 @@ export async function recommend(params: {
     method: "POST",
     body: JSON.stringify(params),
   });
+}
+
+export async function* recommendStream(params: {
+  jd_text: string;
+}): AsyncGenerator<StreamEvent> {
+  const res = await fetch("/api/recommend/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok || !res.body) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(body.detail ?? `HTTP ${res.status}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        try {
+          yield JSON.parse(line.slice(6)) as StreamEvent;
+        } catch { /* skip malformed */ }
+      }
+    }
+  }
 }

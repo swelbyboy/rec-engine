@@ -9,15 +9,17 @@ from io import BytesIO
 from pathlib import Path
 from typing import Annotated
 
+import asyncio
+
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .constraint_engine import run_constraint_engine
-from .explanation import format_elimination_reason, generate_explanations_for_pipeline
+from .explanation import format_elimination_reason, generate_explanation, generate_explanations_for_pipeline
 from .extraction import parse_job_description
 from .models import (
     DEFAULT_WEIGHTS,
@@ -358,6 +360,164 @@ def recommend(request: RecommendRequest) -> JSONResponse:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Pipeline error: {exc}") from exc
     return JSONResponse(content=result)
+
+
+# ---------------------------------------------------------------------------
+# POST /recommend/stream — SSE: emit candidates as explanations complete
+# ---------------------------------------------------------------------------
+def _job_details_dict(job) -> dict:
+    return {
+        "company": job.company,
+        "seniority": job.seniority,
+        "min_years_experience": job.min_years_experience,
+        "management_required": job.management_required,
+        "required_skills": job.required_skills,
+        "preferred_skills": job.preferred_skills,
+        "industries_preferred": job.industries_preferred,
+        "constraints": [
+            {"type": c.type.value, "category": c.category, "description": c.description, "operator": c.operator.value}
+            for c in job.constraints
+        ],
+    }
+
+
+@app.post("/recommend/stream")
+async def recommend_stream(request: RecommendRequest) -> StreamingResponse:
+    """Pipeline with SSE streaming: ranked list emitted after scoring, then
+    explanations streamed one-by-one as they complete in parallel."""
+    if not request.jd_text.strip():
+        raise HTTPException(status_code=422, detail="jd_text must not be empty")
+    if not _candidate_store or len(_candidate_store) == 0:
+        raise HTTPException(status_code=503, detail="Candidate store not loaded")
+
+    def _emit(data: dict) -> str:
+        return f"data: {json.dumps(data)}\n\n"
+
+    async def generate():
+        try:
+            # Resolve weights
+            if request.weights:
+                effective_weights = request.weights
+            elif request.profile:
+                if request.profile not in WEIGHT_PROFILES:
+                    yield _emit({"type": "error", "message": f"Unknown profile '{request.profile}'"})
+                    return
+                effective_weights = WEIGHT_PROFILES[request.profile]
+            else:
+                effective_weights = None
+
+            # 1. Parse JD
+            yield _emit({"type": "step", "step": "parsing"})
+            job = await asyncio.to_thread(parse_job_description, request.jd_text)
+
+            # 2. Retrieve
+            yield _emit({"type": "step", "step": "retrieving"})
+            retrieved = await asyncio.to_thread(
+                retrieve_top_k, job, _candidate_store, request.retrieve_k
+            )
+            candidates = [c for c, _ in retrieved]
+
+            # 3. Constraint engine (parallel)
+            yield _emit({"type": "step", "step": "constraints"})
+            constraint_list = await asyncio.gather(
+                *[asyncio.to_thread(run_constraint_engine, job, c) for c in candidates]
+            )
+            constraint_results = {c.id: r for c, r in zip(candidates, constraint_list)}
+
+            # 4. Score and rank
+            yield _emit({"type": "step", "step": "scoring"})
+            pipeline_result = rank_candidates(
+                job, candidates, constraint_results,
+                weights=effective_weights, top_n_explanations=request.top_n,
+            )
+
+            # Build review alerts
+            job_constraints_by_id = {c.id: c for c in job.constraints}
+            review_alerts = []
+            for sc in pipeline_result.ranked_candidates:
+                for match in sc.constraint_result.constraint_matches:
+                    if match.flagged_for_review:
+                        emp_c = job_constraints_by_id.get(match.employer_constraint_id)
+                        review_alerts.append({
+                            "candidate_id": sc.candidate_id,
+                            "candidate_name": sc.name,
+                            "constraint": emp_c.description if emp_c else match.employer_constraint_id,
+                            "reason": match.reason,
+                            "match_type": match.match_type.value,
+                            "score": match.score,
+                        })
+
+            def _ranked_entry(i: int, sc) -> dict:
+                return {
+                    "rank": i + 1,
+                    "candidate_id": sc.candidate_id,
+                    "name": sc.name,
+                    "score": sc.score,
+                    "explanation": "",
+                    "feature_vector": sc.feature_vector.model_dump(),
+                    "flagged_for_review": sc.constraint_result.flagged_for_review,
+                    "constraint_matches": [
+                        {"match_type": m.match_type.value, "compatible": m.compatible,
+                         "score": m.score, "reason": m.reason, "flagged": m.flagged_for_review}
+                        for m in sc.constraint_result.constraint_matches
+                    ],
+                }
+
+            # Emit full ranked structure (no explanations yet) — UI shows cards immediately
+            yield _emit({
+                "type": "meta",
+                "job_title": job.title,
+                "job_details": _job_details_dict(job),
+                "ranked_candidates": [_ranked_entry(i, sc) for i, sc in enumerate(pipeline_result.ranked_candidates)],
+                "eliminated_candidates": [
+                    {"candidate_id": ec.candidate_id, "name": ec.name,
+                     "elimination_reason": format_elimination_reason(ec.constraint_result)}
+                    for ec in pipeline_result.eliminated_candidates
+                ],
+                "review_alerts": review_alerts,
+                "retrieved_candidates": len(candidates),
+                "weights_used": pipeline_result.weights_used,
+                "profile_used": request.profile or ("custom" if request.weights else "balanced"),
+            })
+
+            # 5. Generate explanations in parallel, emit as each completes
+            yield _emit({"type": "step", "step": "explaining"})
+            top_n = min(request.top_n, len(pipeline_result.ranked_candidates))
+            candidates_by_id = {c.id: c for c in candidates}
+            queue: asyncio.Queue = asyncio.Queue()
+
+            async def _explain_one(rank_idx: int, sc) -> None:
+                candidate = candidates_by_id.get(sc.candidate_id)
+                if not candidate:
+                    await queue.put((rank_idx, ""))
+                    return
+                try:
+                    text = await asyncio.to_thread(
+                        generate_explanation,
+                        job, candidate, sc.feature_vector, sc.constraint_result, sc.score,
+                    )
+                except Exception:
+                    text = ""
+                await queue.put((rank_idx, text))
+
+            top_candidates = list(enumerate(pipeline_result.ranked_candidates[:top_n]))
+            for task_coro in [_explain_one(i, sc) for i, sc in top_candidates]:
+                asyncio.create_task(task_coro)
+
+            for _ in range(len(top_candidates)):
+                rank_idx, explanation = await queue.get()
+                yield _emit({"type": "explanation", "rank": rank_idx + 1, "explanation": explanation})
+
+            yield _emit({"type": "done"})
+
+        except Exception as exc:
+            yield _emit({"type": "error", "message": str(exc)})
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -96,3 +96,21 @@ export interface PipelineStepState {
   label: string;
   status: StepStatus;
 }
+
+// Streaming event types
+export type StreamEvent =
+  | { type: "step"; step: PipelineStep }
+  | {
+      type: "meta";
+      job_title: string;
+      job_details: JobDetails;
+      ranked_candidates: RankedCandidate[];
+      eliminated_candidates: EliminatedCandidate[];
+      review_alerts: ReviewAlert[];
+      retrieved_candidates: number;
+      weights_used: Record<string, number>;
+      profile_used: string;
+    }
+  | { type: "explanation"; rank: number; explanation: string }
+  | { type: "done" }
+  | { type: "error"; message: string };

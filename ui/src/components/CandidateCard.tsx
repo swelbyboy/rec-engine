@@ -97,10 +97,15 @@ export default function CandidateCard({ candidate }: Props) {
               </span>
             )}
           </div>
-          {candidate.explanation && (
+          {candidate.explanation ? (
             <p className="mt-1 text-xs leading-relaxed line-clamp-2" style={{ color: "rgba(255,255,255,0.4)" }}>
               {paragraphs[0]}
             </p>
+          ) : (
+            <div className="mt-1.5 space-y-1.5">
+              <div className="h-2 w-3/4 rounded animate-pulse" style={{ background: "rgba(255,255,255,0.08)" }} />
+              <div className="h-2 w-1/2 rounded animate-pulse" style={{ background: "rgba(255,255,255,0.05)" }} />
+            </div>
           )}
         </div>
 
@@ -126,11 +131,11 @@ export default function CandidateCard({ candidate }: Props) {
       {expanded && (
         <div className="border-t px-4 pb-5 pt-4 space-y-5" style={{ borderColor: "rgba(255,255,255,0.07)" }}>
           {/* Explanation paragraphs */}
-          {candidate.explanation && (
-            <div>
-              <p className="mb-2.5 text-[10px] font-semibold uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.3)" }}>
-                Assessment
-              </p>
+          <div>
+            <p className="mb-2.5 text-[10px] font-semibold uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.3)" }}>
+              Assessment
+            </p>
+            {candidate.explanation ? (
               <div className="space-y-3">
                 {paragraphs.map((para, i) => (
                   <p key={i} className="text-sm leading-relaxed" style={{ color: "rgba(255,255,255,0.7)" }}>
@@ -138,8 +143,14 @@ export default function CandidateCard({ candidate }: Props) {
                   </p>
                 ))}
               </div>
-            </div>
-          )}
+            ) : (
+              <div className="space-y-2">
+                {[...Array(4)].map((_, i) => (
+                  <div key={i} className="h-2.5 rounded animate-pulse" style={{ background: "rgba(255,255,255,0.07)", width: i === 3 ? "60%" : "100%" }} />
+                ))}
+              </div>
+            )}
+          </div>
 
           {/* Feature vector */}
           <div>
