@@ -67,6 +67,9 @@ def job_to_search_text(job: JobDescription) -> str:
     return " ".join(parts)
 
 
+_MIN_RETRIEVAL_SIMILARITY = 0.25  # candidates below this cosine sim are semantically irrelevant
+
+
 def retrieve_top_k(
     job: JobDescription,
     store: CandidateStore,
@@ -74,50 +77,15 @@ def retrieve_top_k(
 ) -> list[tuple[Candidate, float]]:
     """Return top-K candidates by semantic similarity to the job description.
 
-    If the job has a specific discipline (not 'other'), candidates are pre-filtered
-    to that discipline before embedding similarity is computed. This prevents
-    sales roles from returning engineering candidates and vice versa.
-    If discipline filtering would leave fewer than top_k candidates, the filter
-    is relaxed to include 'other' discipline candidates as well.
+    Candidates with cosine similarity below _MIN_RETRIEVAL_SIMILARITY are excluded
+    before ranking. This naturally handles cross-discipline cases (e.g. a sales JD
+    scores very low against tech candidates) without any hardcoded discipline rules.
     """
     ids, matrix = store.embedding_matrix()
     if not ids:
         return []
 
-    # Discipline pre-filter: build a mask of candidate indices to consider
-    job_discipline = getattr(job, "discipline", "other")
-    all_candidates = [store.get(cid) for cid in ids]
-
-    if job_discipline != "other":
-        # Primary: same discipline; secondary: 'other' (unclassified) as fallback
-        primary_mask = np.array([
-            i for i, c in enumerate(all_candidates)
-            if c is not None and c.discipline == job_discipline
-        ])
-        fallback_mask = np.array([
-            i for i, c in enumerate(all_candidates)
-            if c is not None and c.discipline == "other"
-        ])
-        # Use primary only if enough candidates; otherwise include fallback too
-        if len(primary_mask) >= min(top_k, 5):
-            candidate_mask = primary_mask
-        elif len(primary_mask) > 0:
-            candidate_mask = np.concatenate([primary_mask, fallback_mask])
-        else:
-            # No candidates of this discipline in the pool — return nothing rather
-            # than surfacing cross-discipline candidates.
-            print(
-                f"  [retrieval] No candidates found for discipline '{job_discipline}' — returning empty.",
-                flush=True,
-            )
-            return []
-        print(
-            f"  [retrieval] Discipline filter '{job_discipline}': "
-            f"{len(primary_mask)} primary + {len(fallback_mask)} fallback candidates",
-            flush=True,
-        )
-    else:
-        candidate_mask = np.arange(len(ids))
+    candidate_mask = np.arange(len(ids))
 
     filtered_ids = [ids[i] for i in candidate_mask]
     filtered_matrix = matrix[candidate_mask]
@@ -132,8 +100,19 @@ def retrieve_top_k(
     normed_matrix = filtered_matrix / row_norms
     scores = normed_matrix @ job_norm  # shape: (n_filtered,)
 
-    k = min(top_k, len(filtered_ids))
-    top_indices = np.argsort(scores)[::-1][:k]
+    # Apply minimum similarity threshold — excludes semantically irrelevant candidates
+    eligible = np.where(scores >= _MIN_RETRIEVAL_SIMILARITY)[0]
+    if len(eligible) == 0:
+        print(
+            f"  [retrieval] No candidates above similarity threshold "
+            f"{_MIN_RETRIEVAL_SIMILARITY} (best: {scores.max():.3f}) — returning empty.",
+            flush=True,
+        )
+        return []
+
+    eligible_scores = scores[eligible]
+    k = min(top_k, len(eligible))
+    top_indices = eligible[np.argsort(eligible_scores)[::-1][:k]]
 
     results: list[tuple[Candidate, float]] = []
     for idx in top_indices:
@@ -144,7 +123,8 @@ def retrieve_top_k(
 
     print(
         f"  [retrieval] Retrieved {len(results)}/{len(ids)} candidates "
-        f"(top score: {results[0][1]:.3f}, bottom: {results[-1][1]:.3f})",
+        f"(top: {results[0][1]:.3f}, bottom: {results[-1][1]:.3f}, "
+        f"below threshold: {len(filtered_ids) - len(eligible)})",
         flush=True,
     )
     return results
