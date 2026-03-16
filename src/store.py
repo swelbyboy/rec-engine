@@ -30,6 +30,10 @@ _openai_client = None
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 
+# Increment this whenever the Candidate schema gains new extracted fields.
+# Any cached file with a different version is treated as stale and re-processed.
+CACHE_SCHEMA_VERSION = 2  # v2: added discipline field
+
 
 def _get_openai_client():
     global _openai_client
@@ -105,7 +109,10 @@ class CandidateStore:
             cache_path = self.cache_dir / f"{cid}.json"
             if cache_path.exists():
                 cached = json.loads(cache_path.read_text())
-                if cached.get("source_hash") == _raw_hash(raw):
+                if (
+                    cached.get("source_hash") == _raw_hash(raw)
+                    and cached.get("schema_version") == CACHE_SCHEMA_VERSION
+                ):
                     fresh.append(raw)
                     self._load_from_cache(cid, cached)
                     continue
@@ -152,6 +159,7 @@ class CandidateStore:
         cache_path.write_text(
             json.dumps(
                 {
+                    "schema_version": CACHE_SCHEMA_VERSION,
                     "source_hash": _raw_hash(raw),
                     "candidate": candidate.model_dump(mode="json"),
                     "embedding": embedding.tolist(),
