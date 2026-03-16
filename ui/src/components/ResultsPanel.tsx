@@ -1,5 +1,9 @@
 import { useState } from "react";
-import { Users, ChevronDown, ChevronUp, Search } from "lucide-react";
+import { Users, ChevronDown, ChevronUp, Search, AlertCircle } from "lucide-react";
+
+// If the best candidate's required-skills overlap is below this, the pool
+// has no one with the right skills for the role (e.g. sales vs tech pool).
+const SKILLS_OVERLAP_THRESHOLD = 0.15;
 import type { RecommendResult } from "../types";
 import CandidateCard from "./CandidateCard";
 
@@ -44,6 +48,8 @@ export default function ResultsPanel({ result, isLoading }: Props) {
   }
 
   const { ranked_candidates, eliminated_candidates, job_title } = result;
+  const topSkillsOverlap = ranked_candidates[0]?.feature_vector.required_skills_overlap ?? 0;
+  const noStrongMatch = topSkillsOverlap < SKILLS_OVERLAP_THRESHOLD;
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -70,6 +76,20 @@ export default function ResultsPanel({ result, isLoading }: Props) {
 
       {/* Scrollable list */}
       <div className="flex-1 overflow-y-auto p-4 space-y-2 min-h-0">
+        {noStrongMatch && (
+          <div
+            className="rounded-lg border px-4 py-3 flex gap-3 items-start"
+            style={{ background: "rgba(220,38,38,0.08)", borderColor: "rgba(220,38,38,0.2)" }}
+          >
+            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-red-400" />
+            <div>
+              <p className="text-xs font-semibold text-red-400">No strong matches in talent pool</p>
+              <p className="mt-0.5 text-xs" style={{ color: "rgba(255,255,255,0.4)" }}>
+                No candidates in the current pool have the required skills for this role (best required-skills overlap: {Math.round(topSkillsOverlap * 100)}%). Results below are shown for reference only.
+              </p>
+            </div>
+          </div>
+        )}
         {ranked_candidates.map((c) => (
           <CandidateCard key={c.candidate_id} candidate={c} />
         ))}

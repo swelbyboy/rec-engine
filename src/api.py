@@ -166,6 +166,35 @@ def health() -> dict:
 # ---------------------------------------------------------------------------
 # GET /candidates and GET /jobs
 # ---------------------------------------------------------------------------
+_ML_SKILLS = {"pytorch", "tensorflow", "keras", "sklearn", "xgboost", "lightgbm",
+               "nlp", "llm", "computer vision", "machine learning", "deep learning",
+               "ml", "data science", "hugging face", "transformers", "onnx", "mlflow",
+               "reinforcement learning", "feature engineering"}
+_DATA_SKILLS = {"dbt", "airflow", "kafka", "spark", "pyspark", "snowflake", "bigquery",
+                "databricks", "redshift", "etl", "data pipeline", "data warehouse",
+                "data engineering", "fivetran", "dagster", "prefect"}
+_PRODUCT_SKILLS = {"product strategy", "roadmapping", "roadmap", "user research",
+                   "okrs", "go-to-market", "a/b testing", "product-led growth",
+                   "stakeholder", "product management", "discovery", "prioritisation"}
+_DESIGN_SKILLS = {"figma", "ux", "ui design", "user experience", "design systems",
+                  "sketch", "prototyping", "information architecture", "usability testing"}
+_DEVOPS_SKILLS = {"kubernetes", "terraform", "ansible", "ci/cd", "aws", "gcp", "azure",
+                  "docker", "infrastructure", "devops", "sre", "platform engineering"}
+
+
+def _infer_discipline(skills: list[str]) -> str:
+    low = {s.lower() for s in skills}
+    scores = {
+        "ML / AI": sum(1 for s in low if any(k in s for k in _ML_SKILLS)),
+        "Data Engineering": sum(1 for s in low if any(k in s for k in _DATA_SKILLS)),
+        "Product": sum(1 for s in low if any(k in s for k in _PRODUCT_SKILLS)),
+        "Design": sum(1 for s in low if any(k in s for k in _DESIGN_SKILLS)),
+        "DevOps / Platform": sum(1 for s in low if any(k in s for k in _DEVOPS_SKILLS)),
+    }
+    best, count = max(scores.items(), key=lambda x: x[1])
+    return best if count > 0 else "Engineering"
+
+
 @router.get("/candidates")
 def list_candidates() -> list[dict]:
     if not _candidate_store:
@@ -180,6 +209,7 @@ def list_candidates() -> list[dict]:
             "industries": c.industries,
             "management_experience": c.management_experience,
             "career_trajectory": c.career_trajectory,
+            "discipline": _infer_discipline(c.skills),
         }
         for c in _candidate_store.get_all()
     ]

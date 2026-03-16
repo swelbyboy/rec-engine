@@ -97,6 +97,7 @@ export interface CandidateRow {
   industries: string[];
   management_experience: boolean;
   career_trajectory: string;
+  discipline: string;
 }
 
 export interface ProfileInfo {
