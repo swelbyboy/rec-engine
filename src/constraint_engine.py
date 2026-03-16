@@ -499,9 +499,10 @@ def run_constraint_engine(
         if match.candidate_constraint_id:
             unmatched_candidate_ids.discard(match.candidate_constraint_id)
 
-        if not match.compatible and emp_c.type == ConstraintType.hard:
+        if not match.compatible:
+            prefix = "Hard" if emp_c.type == ConstraintType.hard else "Soft"
             elimination_reasons.append(
-                f"Hard constraint failure on '{emp_c.canonical_key or emp_c.description}': "
+                f"{prefix} constraint failure on '{emp_c.canonical_key or emp_c.description}': "
                 f"{match.reason}"
             )
 
