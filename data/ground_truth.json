@@ -1,0 +1,89 @@
+[
+  {
+    "job_id": "job-001",
+    "label": "Senior Data Engineer — Apex Fintech",
+    "notes": "5-days onsite Canary Wharf. No visa sponsorship (right to work required). Salary cap £85k. Core stack: Python, dbt, Snowflake. Kafka a strong plus. Fintech/payments background preferred. Hard eliminates: remote-only (cand-007), salary above cap (cand-008), visa required (cand-009), wrong roles (PMs + ML engineers). Kieran Walsh (cand-010) soft preference for 4-day week but stated it's not a dealbreaker — not eliminated.",
+    "expected_ranking": [
+      "cand-001",
+      "cand-002",
+      "cand-010",
+      "cand-013",
+      "cand-020",
+      "cand-017"
+    ],
+    "expected_eliminated": [
+      "cand-003",
+      "cand-004",
+      "cand-005",
+      "cand-006",
+      "cand-007",
+      "cand-008",
+      "cand-009",
+      "cand-011",
+      "cand-012",
+      "cand-014",
+      "cand-015",
+      "cand-016",
+      "cand-018",
+      "cand-019"
+    ]
+  },
+  {
+    "job_id": "job-002",
+    "label": "Senior Product Manager — SaaS Growth, CloudBridge",
+    "notes": "Fully remote, async-first. Visa sponsorship available. B2B SaaS, 5+ years PM. People management required. Salary up to £95k. Preferred: procurement/workflow background, PLG exposure. Hard eliminates: all DE and ML candidates (wrong role). Sienna Park (cand-015) has a soft constraint around B-corp certification that conflicts — not eliminated (soft), but penalised. Vivienne Chen (cand-011) has only 1 direct report and flagged concern about company size.",
+    "expected_ranking": [
+      "cand-004",
+      "cand-003",
+      "cand-015",
+      "cand-018",
+      "cand-011"
+    ],
+    "expected_eliminated": [
+      "cand-001",
+      "cand-002",
+      "cand-005",
+      "cand-006",
+      "cand-007",
+      "cand-008",
+      "cand-009",
+      "cand-010",
+      "cand-012",
+      "cand-013",
+      "cand-014",
+      "cand-016",
+      "cand-017",
+      "cand-019",
+      "cand-020"
+    ]
+  },
+  {
+    "job_id": "job-003",
+    "label": "ML Engineer — Perception Systems, Stratagem Defence",
+    "notes": "Cambridge, 2 days onsite. Compressed hours available. Salary up to £100k. SC/DV clearance strongly preferred. UK nationals or 5+ years UK PR only — government contracts. Core: PyTorch, computer vision, MLflow. Desirable: ONNX, TensorRT, sensor fusion. Hard eliminates: wrong roles (DE, PM), visa/nationality issues (cand-007 Marco Bellini, cand-009 Raj Mehta), Kwame Adjei (cand-016) has hard constraint requiring net-zero certified employer — Stratagem cannot satisfy this. Nathaniel Brooks (cand-012) is technically excellent but research-oriented and may not commit long-term; ranked 3rd. Ananya Krishnan (cand-019) has highly transferable embedded deployment skills from audio domain.",
+    "expected_ranking": [
+      "cand-005",
+      "cand-006",
+      "cand-012",
+      "cand-019",
+      "cand-014"
+    ],
+    "expected_eliminated": [
+      "cand-001",
+      "cand-002",
+      "cand-003",
+      "cand-004",
+      "cand-007",
+      "cand-008",
+      "cand-009",
+      "cand-010",
+      "cand-011",
+      "cand-013",
+      "cand-015",
+      "cand-016",
+      "cand-017",
+      "cand-018",
+      "cand-020"
+    ]
+  }
+]

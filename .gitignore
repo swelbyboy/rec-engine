@@ -1,0 +1,25 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment — never commit secrets
+.env
+
+# Node / frontend
+ui/node_modules/
+ui/dist/
+
+# Claude internal
+.claude/projects/
+.claude/todos/
+
+# OS
+.DS_Store
+Thumbs.db
