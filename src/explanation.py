@@ -36,17 +36,23 @@ def _get_client():
 # ---------------------------------------------------------------------------
 # Explanation prompt
 # ---------------------------------------------------------------------------
-EXPLANATION_SYSTEM = """You are a senior recruiter writing structured candidate assessment notes.
-Be concise (150–250 words), specific, and evidence-based.
-Write in plain prose — no bullet lists, no markdown headers.
+EXPLANATION_SYSTEM = """You are a senior recruiter writing structured candidate assessment notes for a hiring manager.
 
-CRITICAL: Base your assessment ONLY on the data explicitly provided below.
-Do NOT invent constraint conflicts, concerns, or strengths not present in the constraint matches list.
-If a constraint shows COMPATIBLE, do not describe it as a conflict or concern."""
+Write in three short paragraphs separated by a blank line:
+1. Strengths — where this candidate best matches the role (skills, experience, background)
+2. Gaps — the most significant limitations or development areas for this role
+3. Practical flags — any logistics, constraints, or verification items worth noting; if everything is clean, say so briefly
+
+Rules:
+- Use plain English a hiring manager can act on. No technical jargon.
+- Never use terms like "canonical", "score", "delta", "coefficient", "0.67", or any raw numbers.
+- Do not describe constraint matches that are COMPATIBLE as problems or concerns.
+- Be specific and evidence-based. Do not pad.
+- 50–80 words per paragraph, three paragraphs total."""
 
 
 def _format_constraint_matches(cr: CompatibilityResult) -> str:
-    """Render constraint matches as a grounded, labelled list for the LLM."""
+    """Render constraint matches as plain-English labels for the LLM."""
     if not cr.constraint_matches:
         return "  (no employer constraints extracted)"
 
@@ -54,12 +60,12 @@ def _format_constraint_matches(cr: CompatibilityResult) -> str:
     lines: list[str] = []
     for m in cr.constraint_matches:
         if not m.compatible:
-            status = "INCOMPATIBLE"
+            status = "DOES NOT MEET"
         elif m.score < 0.7:
-            status = "SOFT MISMATCH"
+            status = "PARTIAL MATCH"
         else:
-            status = "COMPATIBLE"
-        flag = " [low confidence — needs verification]" if m.employer_constraint_id in flagged_ids else ""
+            status = "MEETS"
+        flag = " [needs verification — low confidence extraction]" if m.employer_constraint_id in flagged_ids else ""
         lines.append(f"  [{status}] {m.reason[:120]}{flag}")
     return "\n".join(lines)
 
@@ -97,12 +103,10 @@ Preferred skills: {', '.join(job.preferred_skills[:8]) or 'none specified'}
 Constraint matches (ONLY discuss what is listed here — do not invent additional issues):
 {constraint_block}
 
-Write a 150–250 word recruiter assessment covering:
-1. Fit summary — strongest alignment points based on the feature scores above
-2. Constraint analysis — describe only the constraints listed above; use the COMPATIBLE/SOFT MISMATCH/INCOMPATIBLE labels to guide your language
-{"3. Flag-for-review — list what a recruiter should verify (low-confidence extractions only)" if has_flags else ""}
-
-Do not include section headers. Write in continuous prose."""
+Write three short paragraphs (no headers, no bullet lists, plain English):
+1. Strengths — specific skills and experience that match this role well
+2. Gaps — honest assessment of where this candidate falls short of the requirements
+3. Practical flags — logistics issues (location, salary, visa, right to work, availability) or constraint items needing verification; if none, one sentence saying everything checks out{"" if not has_flags else " — include the items flagged for verification"}"""
 
 
 # ---------------------------------------------------------------------------

@@ -1,10 +1,11 @@
 import { useState, useRef } from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, RotateCcw } from "lucide-react";
 import type { PipelineStepState, RecommendResult, ReviewAlert } from "./types";
 import { recommend } from "./lib/api";
 import JobInput from "./components/JobInput";
 import PipelineStatus from "./components/PipelineStatus";
 import ResultsPanel from "./components/ResultsPanel";
+import JobDetailsPanel from "./components/JobDetailsPanel";
 
 const INITIAL_STEPS: PipelineStepState[] = [
   { id: "parsing", label: "Parsing job description", status: "pending" },
@@ -72,15 +73,19 @@ export default function App() {
     }
   }
 
+  function handleReset() {
+    setAppState("idle");
+    setResult(null);
+    setReviewAlerts([]);
+    setError(null);
+  }
+
   const isLoading = appState === "loading";
 
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <header
-        className="flex-none px-8 py-5 border-b"
-        style={{ borderColor: "rgba(255,255,255,0.08)" }}
-      >
+      <header className="flex-none px-8 py-5 border-b" style={{ borderColor: "rgba(255,255,255,0.08)" }}>
         <div className="mx-auto max-w-screen-xl flex items-baseline gap-3">
           <span className="text-sm font-semibold tracking-tight text-white">Recruiter</span>
           <span className="text-xs" style={{ color: "rgba(255,255,255,0.35)" }}>
@@ -93,13 +98,33 @@ export default function App() {
       <main className="flex-1 overflow-hidden mx-auto w-full max-w-screen-xl px-8 py-6 flex gap-5">
         {/* Left column */}
         <div className="w-1/2 flex flex-col gap-3 min-h-0">
-          {/* Main card — fixed height fills column */}
           <div
             className="flex-1 flex flex-col rounded-xl border p-6 min-h-0"
             style={{ background: "#111214", borderColor: "rgba(255,255,255,0.08)" }}
           >
             {isLoading ? (
               <PipelineStatus steps={steps} />
+            ) : appState === "done" && result?.job_details ? (
+              <div className="flex flex-col h-full min-h-0 gap-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.3)" }}>
+                    Evaluation complete
+                  </p>
+                  <button
+                    onClick={handleReset}
+                    className="flex items-center gap-1.5 text-xs transition-colors"
+                    style={{ color: "rgba(255,255,255,0.35)" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.color = "#d5fa54")}
+                    onMouseLeave={(e) => (e.currentTarget.style.color = "rgba(255,255,255,0.35)")}
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    New search
+                  </button>
+                </div>
+                <div className="flex-1 min-h-0 overflow-y-auto">
+                  <JobDetailsPanel title={result.job_title} details={result.job_details} />
+                </div>
+              </div>
             ) : (
               <JobInput onSubmit={handleSubmit} isLoading={isLoading} />
             )}
@@ -112,9 +137,7 @@ export default function App() {
               style={{ background: "rgba(220,38,38,0.1)", borderColor: "rgba(220,38,38,0.25)" }}
             >
               <p className="text-sm font-medium text-red-400">Error</p>
-              <p className="mt-0.5 text-sm" style={{ color: "rgba(255,255,255,0.55)" }}>
-                {error}
-              </p>
+              <p className="mt-0.5 text-sm" style={{ color: "rgba(255,255,255,0.55)" }}>{error}</p>
             </div>
           )}
 
@@ -127,7 +150,7 @@ export default function App() {
               <div className="flex items-center gap-2 mb-2">
                 <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />
                 <p className="text-xs font-semibold text-amber-400">
-                  {reviewAlerts.length} constraint{reviewAlerts.length > 1 ? "s" : ""} flagged
+                  {reviewAlerts.length} constraint{reviewAlerts.length > 1 ? "s" : ""} need verification
                 </p>
               </div>
               <ul className="space-y-1">

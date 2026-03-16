@@ -302,6 +302,24 @@ def _run_pipeline(
         "review_alerts": review_alerts,
         "weights_used": pipeline_result.weights_used,
         "profile_used": profile or ("custom" if weights else "balanced"),
+        "job_details": {
+            "company": job.company,
+            "seniority": job.seniority,
+            "min_years_experience": job.min_years_experience,
+            "management_required": job.management_required,
+            "required_skills": job.required_skills,
+            "preferred_skills": job.preferred_skills,
+            "industries_preferred": job.industries_preferred,
+            "constraints": [
+                {
+                    "type": c.type.value,
+                    "category": c.category,
+                    "description": c.description,
+                    "operator": c.operator.value,
+                }
+                for c in job.constraints
+            ],
+        },
     }
 
 

@@ -45,6 +45,24 @@ export interface ReviewAlert {
   score: number;
 }
 
+export interface JobConstraint {
+  type: "hard" | "soft";
+  category: string;
+  description: string;
+  operator: string;
+}
+
+export interface JobDetails {
+  company: string;
+  seniority: string;
+  min_years_experience: number;
+  management_required: boolean;
+  required_skills: string[];
+  preferred_skills: string[];
+  industries_preferred: string[];
+  constraints: JobConstraint[];
+}
+
 export interface RecommendResult {
   job_id: string;
   job_title: string;
@@ -54,6 +72,7 @@ export interface RecommendResult {
   review_alerts: ReviewAlert[];
   weights_used: Record<string, number>;
   profile_used: string;
+  job_details?: JobDetails;
 }
 
 export interface ProfileInfo {
