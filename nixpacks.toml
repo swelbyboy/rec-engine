@@ -3,7 +3,7 @@ nixPkgs = ["nodejs_20", "python311"]
 
 [phases.install]
 cmds = [
-  "pip install .",
+  "/opt/venv/bin/pip install .",
   "cd ui && npm ci"
 ]
 
