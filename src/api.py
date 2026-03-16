@@ -66,7 +66,10 @@ def _load_fixtures() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _load_fixtures()
+    # Run fixture loading in a background thread so the server starts immediately
+    # and passes health checks. On re-extraction (cache miss) this can take several
+    # minutes; /api/health reports candidates_loaded=0 until it completes.
+    asyncio.create_task(asyncio.to_thread(_load_fixtures))
     yield
 
 
@@ -156,9 +159,10 @@ async def fetch_jd(request: FetchJdRequest) -> JSONResponse:
 # ---------------------------------------------------------------------------
 @router.get("/health")
 def health() -> dict:
+    n = len(_candidate_store) if _candidate_store else 0
     return {
-        "status": "ok",
-        "candidates_loaded": len(_candidate_store) if _candidate_store else 0,
+        "status": "ok" if n > 0 else "loading",
+        "candidates_loaded": n,
         "jobs_loaded": len(_raw_jobs),
     }
 
