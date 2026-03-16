@@ -151,24 +151,13 @@ export default function App() {
 
           {reviewAlerts.length > 0 && (
             <div
-              className="flex-none rounded-xl border px-4 py-3"
-              style={{ background: "rgba(217,119,6,0.1)", borderColor: "rgba(217,119,6,0.25)" }}
+              className="flex-none rounded-xl border px-3 py-2.5 flex items-center gap-2"
+              style={{ background: "rgba(217,119,6,0.08)", borderColor: "rgba(217,119,6,0.2)" }}
             >
-              <div className="flex items-center gap-2 mb-2">
-                <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />
-                <p className="text-xs font-semibold text-amber-400">
-                  {reviewAlerts.length} constraint{reviewAlerts.length > 1 ? "s" : ""} need verification
-                </p>
-              </div>
-              <ul className="space-y-1">
-                {reviewAlerts.map((a, i) => (
-                  <li key={i} className="text-xs" style={{ color: "rgba(255,255,255,0.5)" }}>
-                    <span className="font-medium text-amber-400/80">{a.candidate_name}</span>
-                    {" — "}
-                    {a.constraint}: {a.reason}
-                  </li>
-                ))}
-              </ul>
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+              <p className="text-xs text-amber-400">
+                <span className="font-semibold">{reviewAlerts.length}</span> constraint{reviewAlerts.length > 1 ? "s" : ""} flagged for verification — see candidate cards for details
+              </p>
             </div>
           )}
         </div>
