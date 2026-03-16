@@ -239,20 +239,21 @@ def _effective_weights(candidate: Candidate, base_weights: dict[str, float]) -> 
 
 
 def _soft_constraint_score(constraint_result: CompatibilityResult) -> float:
-    """Mean of soft-match scores from the constraint engine result.
+    """Mean of all constraint match scores, including soft failures.
 
-    Only considers matches that are compatible (not hard failures).
+    Non-eliminated candidates can still have incompatible soft constraints
+    (compatible=False on a soft-type constraint). These must be included so
+    they penalise the score — previously they were silently excluded, which
+    caused candidates with explicit soft-constraint failures to rank as if the
+    mismatch didn't exist.
+
+    Hard constraint failures never appear here because those candidates are
+    eliminated before scoring.
     """
-    from .models import ConstraintType  # avoid circular at module level
-
-    soft_scores = [
-        m.score
-        for m in constraint_result.constraint_matches
-        if m.compatible  # hard fails are already accounted for via elimination
-    ]
-    if not soft_scores:
+    scores = [m.score for m in constraint_result.constraint_matches]
+    if not scores:
         return 1.0  # no constraints → no penalty
-    return sum(soft_scores) / len(soft_scores)
+    return sum(scores) / len(scores)
 
 
 # ---------------------------------------------------------------------------
