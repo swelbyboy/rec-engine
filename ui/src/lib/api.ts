@@ -1,4 +1,4 @@
-import type { RecommendResult, StreamEvent } from "../types";
+import type { CandidateRow, RecommendResult, StreamEvent } from "../types";
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
@@ -28,6 +28,10 @@ export async function recommend(params: {
     method: "POST",
     body: JSON.stringify(params),
   });
+}
+
+export async function listCandidates(): Promise<CandidateRow[]> {
+  return apiFetch<CandidateRow[]>("/candidates");
 }
 
 export async function* recommendStream(params: {

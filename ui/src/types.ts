@@ -88,6 +88,17 @@ export interface RecommendResult {
   job_details?: JobDetails;
 }
 
+export interface CandidateRow {
+  id: string;
+  name: string;
+  years_experience: number;
+  seniority_level: string;
+  skills: string[];
+  industries: string[];
+  management_experience: boolean;
+  career_trajectory: string;
+}
+
 export interface ProfileInfo {
   weights: Record<string, number>;
   description: string;

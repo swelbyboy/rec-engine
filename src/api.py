@@ -171,7 +171,16 @@ def list_candidates() -> list[dict]:
     if not _candidate_store:
         return []
     return [
-        {"id": c.id, "name": c.name}
+        {
+            "id": c.id,
+            "name": c.name,
+            "years_experience": c.years_experience,
+            "seniority_level": c.seniority_level,
+            "skills": c.skills,
+            "industries": c.industries,
+            "management_experience": c.management_experience,
+            "career_trajectory": c.career_trajectory,
+        }
         for c in _candidate_store.get_all()
     ]
 

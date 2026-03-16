@@ -1,11 +1,14 @@
 import { useState } from "react";
-import { AlertTriangle, RotateCcw } from "lucide-react";
+import { AlertTriangle, Github, RotateCcw } from "lucide-react";
 import type { PipelineStep, PipelineStepState, RecommendResult, ReviewAlert } from "./types";
 import { recommendStream } from "./lib/api";
 import JobInput from "./components/JobInput";
 import PipelineStatus from "./components/PipelineStatus";
 import ResultsPanel from "./components/ResultsPanel";
 import JobDetailsPanel from "./components/JobDetailsPanel";
+import CandidatesTable from "./components/CandidatesTable";
+
+type Tab = "recruiter" | "candidates";
 
 const STEPS: PipelineStepState[] = [
   { id: "parsing", label: "Parsing job description", status: "pending" },
@@ -28,6 +31,7 @@ function transitionSteps(prev: PipelineStepState[], active: PipelineStep): Pipel
 }
 
 export default function App() {
+  const [tab, setTab] = useState<Tab>("recruiter");
   const [appState, setAppState] = useState<AppState>("idle");
   const [steps, setSteps] = useState<PipelineStepState[]>(STEPS);
   const [result, setResult] = useState<RecommendResult | null>(null);
@@ -95,16 +99,55 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-full">
-      <header className="flex-none px-8 py-5 border-b" style={{ borderColor: "rgba(255,255,255,0.08)" }}>
-        <div className="mx-auto max-w-screen-xl flex items-baseline gap-3">
-          <span className="text-sm font-semibold tracking-tight text-white">Recruiter</span>
-          <span className="text-xs" style={{ color: "rgba(255,255,255,0.35)" }}>
-            Candidate Recommendation Engine
-          </span>
+      <header className="flex-none px-8 border-b" style={{ borderColor: "rgba(255,255,255,0.08)" }}>
+        <div className="mx-auto max-w-screen-xl flex items-center justify-between h-14">
+          {/* Left: wordmark + tabs */}
+          <div className="flex items-center gap-6">
+            <div className="flex items-baseline gap-2">
+              <span className="text-sm font-semibold tracking-tight text-white">Recruiter</span>
+            </div>
+            <nav className="flex items-center gap-1">
+              {(["recruiter", "candidates"] as Tab[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTab(t)}
+                  className="px-3 py-1.5 rounded-md text-xs font-medium capitalize transition-colors"
+                  style={{
+                    background: tab === t ? "rgba(255,255,255,0.08)" : "transparent",
+                    color: tab === t ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.35)",
+                  }}
+                >
+                  {t === "recruiter" ? "Recruiter" : "Candidates"}
+                </button>
+              ))}
+            </nav>
+          </div>
+          {/* Right: GitHub */}
+          <a
+            href="https://github.com/swelbyboy/rec-engine"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 text-xs transition-colors"
+            style={{ color: "rgba(255,255,255,0.35)" }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "rgba(255,255,255,0.7)")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "rgba(255,255,255,0.35)")}
+          >
+            <Github className="h-4 w-4" />
+          </a>
         </div>
       </header>
 
-      <main className="flex-1 overflow-hidden mx-auto w-full max-w-screen-xl px-8 py-6 flex gap-5">
+      {/* Candidates tab */}
+      {tab === "candidates" && (
+        <main className="flex-1 overflow-auto mx-auto w-full max-w-screen-xl px-8 py-6">
+          <p className="mb-4 text-[10px] font-semibold uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.3)" }}>
+            Candidate pool
+          </p>
+          <CandidatesTable />
+        </main>
+      )}
+
+      {tab === "recruiter" && <main className="flex-1 overflow-hidden mx-auto w-full max-w-screen-xl px-8 py-6 flex gap-5">
         {/* Left column */}
         <div className="w-1/2 flex flex-col gap-3 min-h-0">
           <div
@@ -171,7 +214,7 @@ export default function App() {
             <ResultsPanel result={result} isLoading={isLoading && !hasResult} />
           </div>
         </div>
-      </main>
+      </main>}
     </div>
   );
 }
