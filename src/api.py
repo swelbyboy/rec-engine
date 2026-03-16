@@ -13,9 +13,10 @@ import asyncio
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .constraint_engine import run_constraint_engine
@@ -78,10 +79,13 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# All API routes live under /api so they coexist with the static SPA in production.
+router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +123,7 @@ class FetchJdRequest(BaseModel):
     url: str
 
 
-@app.post("/fetch-jd")
+@router.post("/fetch-jd")
 async def fetch_jd(request: FetchJdRequest) -> JSONResponse:
     """Fetch a URL and return its text content (HTML stripped)."""
     try:
@@ -150,7 +154,7 @@ async def fetch_jd(request: FetchJdRequest) -> JSONResponse:
 # ---------------------------------------------------------------------------
 # GET /health
 # ---------------------------------------------------------------------------
-@app.get("/health")
+@router.get("/health")
 def health() -> dict:
     return {
         "status": "ok",
@@ -162,7 +166,7 @@ def health() -> dict:
 # ---------------------------------------------------------------------------
 # GET /candidates and GET /jobs
 # ---------------------------------------------------------------------------
-@app.get("/candidates")
+@router.get("/candidates")
 def list_candidates() -> list[dict]:
     if not _candidate_store:
         return []
@@ -172,7 +176,7 @@ def list_candidates() -> list[dict]:
     ]
 
 
-@app.get("/jobs")
+@router.get("/jobs")
 def list_jobs() -> list[dict]:
     return [{"id": j.id, "title": j.title, "company": j.company} for j in _raw_jobs]
 
@@ -369,7 +373,7 @@ class RecommendRequest(BaseModel):
     retrieve_k: int = 50
 
 
-@app.post("/recommend")
+@router.post("/recommend")
 def recommend(request: RecommendRequest) -> JSONResponse:
     """Run the full recommendation pipeline for a job description text."""
     if not request.jd_text.strip():
@@ -412,7 +416,7 @@ def _job_details_dict(job) -> dict:
     }
 
 
-@app.post("/recommend/stream")
+@router.post("/recommend/stream")
 async def recommend_stream(request: RecommendRequest) -> StreamingResponse:
     """Pipeline with SSE streaming: ranked list emitted after scoring, then
     explanations streamed one-by-one as they complete in parallel."""
@@ -576,7 +580,7 @@ async def recommend_stream(request: RecommendRequest) -> StreamingResponse:
 # ---------------------------------------------------------------------------
 # POST /recommend/upload — multipart form (plain-text or PDF)
 # ---------------------------------------------------------------------------
-@app.post("/recommend/upload")
+@router.post("/recommend/upload")
 async def recommend_upload(
     file: UploadFile = File(...),
     weights: str = Form(default="{}"),
@@ -623,7 +627,7 @@ async def recommend_upload(
 # ---------------------------------------------------------------------------
 # GET /profiles — list named weight profiles
 # ---------------------------------------------------------------------------
-@app.get("/profiles")
+@router.get("/profiles")
 def list_profiles() -> JSONResponse:
     """Return all named weight profiles with their feature weights.
 
@@ -647,7 +651,7 @@ def list_profiles() -> JSONResponse:
 # ---------------------------------------------------------------------------
 # GET /evaluate/{job_id} — run pipeline on a fixture job + compare to ground truth
 # ---------------------------------------------------------------------------
-@app.get("/evaluate/{job_id}")
+@router.get("/evaluate/{job_id}")
 def evaluate(job_id: str, profile: str | None = None) -> JSONResponse:
     """Run the full pipeline on a fixture job and score against hand-labelled ground truth.
 
@@ -716,3 +720,15 @@ def evaluate(job_id: str, profile: str | None = None) -> JSONResponse:
         "metrics": metrics,
         "review_alerts": result.get("review_alerts", []),
     })
+
+
+# ---------------------------------------------------------------------------
+# Register /api router + serve built React SPA
+# ---------------------------------------------------------------------------
+app.include_router(router, prefix="/api")
+
+# Serve the Vite build output in production (ui/dist must exist).
+# All /api/* requests are handled above; anything else falls through to the SPA.
+_ui_dist = Path(__file__).parent.parent / "ui" / "dist"
+if _ui_dist.exists():
+    app.mount("/", StaticFiles(directory=str(_ui_dist), html=True), name="ui")
