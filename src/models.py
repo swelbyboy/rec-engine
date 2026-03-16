@@ -3,6 +3,8 @@ from enum import Enum
 from typing import Literal
 from pydantic import BaseModel, Field
 
+Discipline = Literal["engineering", "data", "ml_ai", "product", "design", "devops", "sales", "other"]
+
 
 LLM_MODEL = "claude-haiku-4-5"
 
@@ -53,6 +55,7 @@ class JobDescription(BaseModel):
     industries_preferred: list[str] = []
     industries_acceptable: list[str] = []
     constraints: list[Constraint] = []
+    discipline: Discipline = "other"
 
 
 class Candidate(BaseModel):
@@ -71,6 +74,7 @@ class Candidate(BaseModel):
     interview_score: float = Field(default=0.5, ge=0.0, le=1.0)
     culture_fit_score: float = Field(default=0.5, ge=0.0, le=1.0)
     constraints: list[Constraint] = []
+    discipline: Discipline = "other"
 
 
 class MatchType(str, Enum):

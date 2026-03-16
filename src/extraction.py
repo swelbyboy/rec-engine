@@ -217,6 +217,11 @@ JD_TOOL_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "Industries considered acceptable background",
             },
+            "discipline": {
+                "type": "string",
+                "enum": ["engineering", "data", "ml_ai", "product", "design", "devops", "sales", "other"],
+                "description": "Broad function this role belongs to. engineering=software/backend/frontend/mobile, data=data engineering/analytics/BI, ml_ai=machine learning/AI/data science research, product=product management/strategy, design=UX/UI/brand, devops=infrastructure/platform/SRE/cloud, sales=sales/account executive/BD/GTM, other=finance/legal/HR/operations/anything else",
+            },
             "constraints": {
                 "type": "array",
                 "description": "Employer-side constraints extracted from the JD",
@@ -251,6 +256,7 @@ JD_TOOL_SCHEMA = {
             "min_years_experience",
             "seniority",
             "management_required",
+            "discipline",
             "constraints",
         ],
     },
@@ -365,6 +371,11 @@ CANDIDATE_FULL_TOOL_SCHEMA = {
             },
             "interview_score": {"type": "number"},
             "culture_fit_score": {"type": "number"},
+            "discipline": {
+                "type": "string",
+                "enum": ["engineering", "data", "ml_ai", "product", "design", "devops", "sales", "other"],
+                "description": "Broad function the candidate works in based on their career history. engineering=software/backend/frontend/mobile, data=data engineering/analytics/BI, ml_ai=machine learning/AI/data science, product=product management, design=UX/UI, devops=infrastructure/platform/SRE, sales=sales/BD/GTM, other=anything else",
+            },
             "constraints": {
                 "type": "array",
                 "description": "All candidate-side constraints, deduplicated across all sources",
@@ -590,6 +601,7 @@ def parse_job_description(raw_text: str, job_id: str = "", title: str = "", comp
         industries_preferred=result.get("industries_preferred", []),
         industries_acceptable=result.get("industries_acceptable", []),
         constraints=constraints,
+        discipline=result.get("discipline", "other"),
     )
 
 
@@ -677,6 +689,7 @@ def merge_candidate_sources(
         interview_score=float(result.get("interview_score") or 0.5),
         culture_fit_score=float(result.get("culture_fit_score") or 0.5),
         constraints=constraints,
+        discipline=result.get("discipline", "other"),
     )
 
 
@@ -741,4 +754,5 @@ def parse_candidate(raw: dict) -> Candidate:
         interview_score=float(result.get("interview_score") or 0.5),
         culture_fit_score=float(result.get("culture_fit_score") or 0.5),
         constraints=constraints,
+        discipline=result.get("discipline", "other"),
     )

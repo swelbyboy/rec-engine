@@ -74,18 +74,47 @@ def retrieve_top_k(
 ) -> list[tuple[Candidate, float]]:
     """Return top-K candidates by semantic similarity to the job description.
 
-    Args:
-        job: Parsed job description.
-        store: Pre-loaded candidate store with embeddings.
-        top_k: Maximum candidates to return. Returned list may be shorter
-               if the store has fewer candidates.
-
-    Returns:
-        List of (Candidate, similarity_score) sorted descending by score.
+    If the job has a specific discipline (not 'other'), candidates are pre-filtered
+    to that discipline before embedding similarity is computed. This prevents
+    sales roles from returning engineering candidates and vice versa.
+    If discipline filtering would leave fewer than top_k candidates, the filter
+    is relaxed to include 'other' discipline candidates as well.
     """
     ids, matrix = store.embedding_matrix()
     if not ids:
         return []
+
+    # Discipline pre-filter: build a mask of candidate indices to consider
+    job_discipline = getattr(job, "discipline", "other")
+    all_candidates = [store.get(cid) for cid in ids]
+
+    if job_discipline != "other":
+        # Primary: same discipline; secondary: 'other' (unclassified) as fallback
+        primary_mask = np.array([
+            i for i, c in enumerate(all_candidates)
+            if c is not None and c.discipline == job_discipline
+        ])
+        fallback_mask = np.array([
+            i for i, c in enumerate(all_candidates)
+            if c is not None and c.discipline == "other"
+        ])
+        # Use primary only if enough candidates; otherwise include fallback too
+        if len(primary_mask) >= min(top_k, 5):
+            candidate_mask = primary_mask
+        elif len(primary_mask) > 0:
+            candidate_mask = np.concatenate([primary_mask, fallback_mask])
+        else:
+            candidate_mask = np.arange(len(ids))  # no matching discipline — use all
+        print(
+            f"  [retrieval] Discipline filter '{job_discipline}': "
+            f"{len(primary_mask)} primary + {len(fallback_mask)} fallback candidates",
+            flush=True,
+        )
+    else:
+        candidate_mask = np.arange(len(ids))
+
+    filtered_ids = [ids[i] for i in candidate_mask]
+    filtered_matrix = matrix[candidate_mask]
 
     job_text = job_to_search_text(job)
     print(f"  [retrieval] Embedding JD: '{job.title}'...", flush=True)
@@ -93,16 +122,16 @@ def retrieve_top_k(
 
     # Normalised cosine similarity: dot(norm(job), norm(candidates))
     job_norm = job_emb / (np.linalg.norm(job_emb) + 1e-10)
-    row_norms = np.linalg.norm(matrix, axis=1, keepdims=True) + 1e-10
-    normed_matrix = matrix / row_norms
-    scores = normed_matrix @ job_norm  # shape: (n_candidates,)
+    row_norms = np.linalg.norm(filtered_matrix, axis=1, keepdims=True) + 1e-10
+    normed_matrix = filtered_matrix / row_norms
+    scores = normed_matrix @ job_norm  # shape: (n_filtered,)
 
-    k = min(top_k, len(ids))
+    k = min(top_k, len(filtered_ids))
     top_indices = np.argsort(scores)[::-1][:k]
 
     results: list[tuple[Candidate, float]] = []
     for idx in top_indices:
-        cid = ids[int(idx)]
+        cid = filtered_ids[int(idx)]
         candidate = store.get(cid)
         if candidate is not None:
             results.append((candidate, float(scores[idx])))
