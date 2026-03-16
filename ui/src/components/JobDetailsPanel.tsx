@@ -72,7 +72,14 @@ export default function JobDetailsPanel({ title, details }: Props) {
             {hardConstraints.map((c, i) => (
               <li key={i} className="flex items-start gap-2 text-xs" style={{ color: "rgba(255,255,255,0.6)" }}>
                 <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "#ff66c4" }} />
-                {c.description}
+                <span>
+                  {c.description}
+                  {c.canonical_key && (
+                    <span className="ml-1.5 font-mono text-[10px]" style={{ color: c.confidence != null && c.confidence < 0.85 ? "#f59e0b" : "rgba(255,255,255,0.25)" }}>
+                      [{c.canonical_key} {c.operator} {String(c.value ?? "?")}{c.confidence != null && c.confidence < 0.85 ? " ⚠" : ""}]
+                    </span>
+                  )}
+                </span>
               </li>
             ))}
           </ul>
@@ -89,7 +96,14 @@ export default function JobDetailsPanel({ title, details }: Props) {
             {softConstraints.map((c, i) => (
               <li key={i} className="flex items-start gap-2 text-xs" style={{ color: "rgba(255,255,255,0.45)" }}>
                 <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "rgba(255,255,255,0.2)" }} />
-                {c.description}
+                <span>
+                  {c.description}
+                  {c.canonical_key && (
+                    <span className="ml-1.5 font-mono text-[10px]" style={{ color: c.confidence != null && c.confidence < 0.85 ? "#f59e0b" : "rgba(255,255,255,0.2)" }}>
+                      [{c.canonical_key} {c.operator} {String(c.value ?? "?")}{c.confidence != null && c.confidence < 0.85 ? " ⚠" : ""}]
+                    </span>
+                  )}
+                </span>
               </li>
             ))}
           </ul>

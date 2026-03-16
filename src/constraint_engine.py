@@ -533,10 +533,12 @@ def run_constraint_engine(
         if match.candidate_constraint_id:
             unmatched_candidate_ids.discard(match.candidate_constraint_id)
 
-        if not match.compatible:
-            prefix = "Hard" if emp_c.type == ConstraintType.hard else "Soft"
+        if not match.compatible and emp_c.type == ConstraintType.hard:
+            # Only hard constraint failures eliminate. Soft incompatibilities
+            # are non-deal-breakers by definition — their score=0.0 already
+            # penalises soft_constraint_score in the ranking layer.
             elimination_reasons.append(
-                f"{prefix} constraint failure on '{emp_c.canonical_key or emp_c.description}': "
+                f"Hard constraint failure on '{emp_c.canonical_key or emp_c.description}': "
                 f"{match.reason}"
             )
 

@@ -50,6 +50,9 @@ export interface JobConstraint {
   category: string;
   description: string;
   operator: string;
+  canonical_key?: string | null;
+  value?: string | number | boolean | null;
+  confidence?: number | null;
 }
 
 export interface JobDetails {

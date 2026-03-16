@@ -324,6 +324,9 @@ def _run_pipeline(
                     "category": c.category,
                     "description": c.description,
                     "operator": c.operator.value,
+                    "canonical_key": c.canonical_key,
+                    "value": c.value,
+                    "confidence": c.confidence,
                 }
                 for c in job.constraints
             ],
@@ -375,7 +378,11 @@ def _job_details_dict(job) -> dict:
         "preferred_skills": job.preferred_skills,
         "industries_preferred": job.industries_preferred,
         "constraints": [
-            {"type": c.type.value, "category": c.category, "description": c.description, "operator": c.operator.value}
+            {
+                "type": c.type.value, "category": c.category, "description": c.description,
+                "operator": c.operator.value, "canonical_key": c.canonical_key,
+                "value": c.value, "confidence": c.confidence,
+            }
             for c in job.constraints
         ],
     }

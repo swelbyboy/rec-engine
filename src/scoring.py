@@ -206,8 +206,9 @@ def _effective_weights(candidate: Candidate, base_weights: dict[str, float]) -> 
     """Return per-candidate weights adjusted for data availability.
 
     Problem: interview_score and culture_fit_score default to 0.5 when no
-    interview transcript exists. Together they carry 15% of the total weight.
-    For un-interviewed candidates this adds a flat 0.075 to every score — equal
+    interview transcript exists. Together they carry 5% of the total weight
+    (reduced from 15% — both are LLM-assessed proxies with bias risk).
+    For un-interviewed candidates this adds a flat 0.025 to every score — equal
     for everyone, non-discriminative, and it makes pre/post-interview rankings
     incomparable (a score of 0.72 before an interview is not the same as 0.72
     after).
@@ -300,14 +301,14 @@ def score_candidate(
     """
     w = weights if weights is not None else DEFAULT_WEIGHTS
     total = (
-        feature_vector.required_skills_overlap * w.get("required_skills_overlap", 0.28)
+        feature_vector.required_skills_overlap * w.get("required_skills_overlap", 0.38)
         + feature_vector.preferred_skills_overlap * w.get("preferred_skills_overlap", 0.10)
         + feature_vector.industry_preferred_match * w.get("industry_preferred_match", 0.12)
         + feature_vector.experience_delta * w.get("experience_delta", 0.10)
         + feature_vector.seniority_match * w.get("seniority_match", 0.08)
         + feature_vector.career_trajectory_score * w.get("career_trajectory_score", 0.05)
-        + feature_vector.interview_score * w.get("interview_score", 0.10)
-        + feature_vector.culture_fit_score * w.get("culture_fit_score", 0.05)
+        + feature_vector.interview_score * w.get("interview_score", 0.03)
+        + feature_vector.culture_fit_score * w.get("culture_fit_score", 0.02)
         + feature_vector.management_match * w.get("management_match", 0.04)
         + feature_vector.soft_constraint_score * w.get("soft_constraint_score", 0.08)
     )

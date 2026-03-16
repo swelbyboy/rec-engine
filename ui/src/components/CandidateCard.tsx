@@ -112,7 +112,7 @@ export default function CandidateCard({ candidate }: Props) {
         {/* Match score */}
         <div className="shrink-0 flex flex-col items-end gap-1.5 ml-2">
           <div className="flex items-center gap-1.5">
-            <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.3)" }}>Match</span>
+            <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.3)" }}>Rank score</span>
             <span className="text-xs font-semibold" style={{ color: accent }}>{pct}%</span>
           </div>
           <div className="w-20 h-1 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,0.08)" }}>
