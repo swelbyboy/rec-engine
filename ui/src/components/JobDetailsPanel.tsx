@@ -74,11 +74,6 @@ export default function JobDetailsPanel({ title, details }: Props) {
                 <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "#ff66c4" }} />
                 <span>
                   {c.description}
-                  {c.confidence != null && c.confidence < 0.85 && (
-                    <span className="ml-1.5 inline-flex items-center rounded px-1 py-0.5 text-[10px] font-medium" style={{ background: "rgba(217,119,6,0.15)", color: "#f59e0b" }}>
-                      verify extraction
-                    </span>
-                  )}
                 </span>
               </li>
             ))}
@@ -98,11 +93,6 @@ export default function JobDetailsPanel({ title, details }: Props) {
                 <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "rgba(255,255,255,0.2)" }} />
                 <span>
                   {c.description}
-                  {c.confidence != null && c.confidence < 0.85 && (
-                    <span className="ml-1.5 inline-flex items-center rounded px-1 py-0.5 text-[10px] font-medium" style={{ background: "rgba(217,119,6,0.15)", color: "#f59e0b" }}>
-                      verify extraction
-                    </span>
-                  )}
                 </span>
               </li>
             ))}

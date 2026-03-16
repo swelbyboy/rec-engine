@@ -19,6 +19,15 @@ export interface FeatureVector {
   soft_constraint_score: number;
 }
 
+export interface CandidateRequirement {
+  description: string;
+  canonical_key: string | null;
+  value: string | number | boolean | null;
+  operator: string;
+  type: "hard" | "soft";
+  currency: string | null;
+}
+
 export interface RankedCandidate {
   rank: number;
   candidate_id: string;
@@ -28,6 +37,7 @@ export interface RankedCandidate {
   feature_vector: FeatureVector;
   flagged_for_review: boolean;
   constraint_matches: ConstraintMatch[];
+  candidate_requirements?: CandidateRequirement[];
 }
 
 export interface EliminatedCandidate {

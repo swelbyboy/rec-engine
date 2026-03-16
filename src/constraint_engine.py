@@ -218,6 +218,70 @@ def _values_equal(a: object, b: object) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Remote ↔ office_days cross-match
+# ---------------------------------------------------------------------------
+def _remote_office_cross_match(
+    employer_c: Constraint,
+    candidate_c: Constraint,
+) -> ConstraintMatch | None:
+    """Cross-match office_days_per_week vs remote_ok.
+
+    A candidate with remote_ok=True effectively has office_days_per_week max 0.
+    Compared against an employer who requires/min N days → incompatible if N > 0.
+    """
+    def to_office_days(c: Constraint) -> tuple[float, ConstraintOperator] | None:
+        if c.canonical_key == "office_days_per_week":
+            try:
+                return float(c.value), c.operator
+            except (TypeError, ValueError):
+                return None
+        elif c.canonical_key == "remote_ok":
+            val_str = str(c.value).lower() if c.value is not None else ""
+            if val_str in ("true", "1", "yes"):
+                return 0.0, ConstraintOperator.max  # fully remote = max 0 days in office
+        return None
+
+    emp_side = to_office_days(employer_c)
+    can_side = to_office_days(candidate_c)
+    if emp_side is None or can_side is None:
+        return None
+
+    emp_days, emp_op = emp_side
+    can_days, can_op = can_side
+
+    if emp_op in (ConstraintOperator.min, ConstraintOperator.requires):
+        compatible = can_days >= emp_days
+    elif emp_op == ConstraintOperator.max:
+        compatible = can_days <= emp_days
+    elif emp_op == ConstraintOperator.prefers:
+        compatible = True  # preference never eliminates
+    else:
+        compatible = True
+
+    if not compatible and can_days == 0.0:
+        reason = (
+            f"Office days per week: candidate requires fully remote, "
+            f"employer {emp_op.value} {emp_days:.0f} days"
+        )
+    else:
+        label = CANONICAL_KEY_DISPLAY.get("office_days_per_week", "Office days per week")
+        reason = (
+            f"{label}: employer {emp_op.value} {emp_days:.0f}, "
+            f"candidate {can_op.value} {can_days:.0f}"
+        )
+
+    return ConstraintMatch(
+        employer_constraint_id=employer_c.id,
+        candidate_constraint_id=candidate_c.id,
+        match_type=MatchType.canonical_key,
+        compatible=compatible,
+        score=1.0 if compatible else 0.0,
+        reason=reason,
+        flagged_for_review=(candidate_c.confidence < 0.85 or employer_c.confidence < 0.85),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Canonical key matching
 # ---------------------------------------------------------------------------
 def canonical_key_match(
@@ -234,7 +298,13 @@ def canonical_key_match(
 
     # Cross-key salary pairs: employer salary_max vs candidate salary_min
     SALARY_CROSS_PAIRS = {("salary_max", "salary_min"), ("salary_min", "salary_max")}
+    # Cross-key remote/office pairs: office_days_per_week vs remote_ok
+    REMOTE_CROSS_PAIRS = {("office_days_per_week", "remote_ok"), ("remote_ok", "office_days_per_week")}
     key_pair = (employer_c.canonical_key, candidate_c.canonical_key)
+
+    if key_pair in REMOTE_CROSS_PAIRS:
+        return _remote_office_cross_match(employer_c, candidate_c)
+
     if key_pair not in SALARY_CROSS_PAIRS and employer_c.canonical_key != candidate_c.canonical_key:
         return None
 

@@ -278,6 +278,29 @@ def _run_pipeline(
         for ec in pipeline_result.eliminated_candidates
     ]
 
+    # Candidate constraints not addressed by this JD — surfaced so recruiters can
+    # see salary expectations, notice periods, etc. that the JD didn't specify.
+    _SURFACE_KEYS = {"salary_min", "salary_max", "notice_period_weeks", "location_city"}
+
+    def _candidate_requirements(sc) -> list[dict]:
+        candidate = candidates_by_id.get(sc.candidate_id)
+        if not candidate:
+            return []
+        unmatched_ids = set(sc.constraint_result.unmatched_candidate_constraints)
+        return [
+            {
+                "description": c.description,
+                "canonical_key": c.canonical_key,
+                "value": c.value,
+                "operator": c.operator.value,
+                "type": c.type.value,
+                "currency": c.currency,
+            }
+            for c in candidate.constraints
+            if c.id in unmatched_ids
+            and (c.canonical_key in _SURFACE_KEYS or c.type.value == "hard")
+        ]
+
     ranked_output = [
         {
             "rank": i + 1,
@@ -297,6 +320,7 @@ def _run_pipeline(
                 }
                 for m in sc.constraint_result.constraint_matches
             ],
+            "candidate_requirements": _candidate_requirements(sc),
         }
         for i, sc in enumerate(pipeline_result.ranked_candidates)
     ]
@@ -454,6 +478,28 @@ async def recommend_stream(request: RecommendRequest) -> StreamingResponse:
                             "score": match.score,
                         })
 
+            candidates_by_id = {c.id: c for c in candidates}
+            _SURFACE_KEYS = {"salary_min", "salary_max", "notice_period_weeks", "location_city"}
+
+            def _candidate_requirements_stream(sc) -> list[dict]:
+                candidate = candidates_by_id.get(sc.candidate_id)
+                if not candidate:
+                    return []
+                unmatched_ids = set(sc.constraint_result.unmatched_candidate_constraints)
+                return [
+                    {
+                        "description": c.description,
+                        "canonical_key": c.canonical_key,
+                        "value": c.value,
+                        "operator": c.operator.value,
+                        "type": c.type.value,
+                        "currency": c.currency,
+                    }
+                    for c in candidate.constraints
+                    if c.id in unmatched_ids
+                    and (c.canonical_key in _SURFACE_KEYS or c.type.value == "hard")
+                ]
+
             def _ranked_entry(i: int, sc) -> dict:
                 return {
                     "rank": i + 1,
@@ -468,6 +514,7 @@ async def recommend_stream(request: RecommendRequest) -> StreamingResponse:
                          "score": m.score, "reason": m.reason, "flagged": m.flagged_for_review}
                         for m in sc.constraint_result.constraint_matches
                     ],
+                    "candidate_requirements": _candidate_requirements_stream(sc),
                 }
 
             # Emit full ranked structure (no explanations yet) — UI shows cards immediately
@@ -490,7 +537,6 @@ async def recommend_stream(request: RecommendRequest) -> StreamingResponse:
             # 5. Generate explanations in parallel, emit as each completes
             yield _emit({"type": "step", "step": "explaining"})
             top_n = min(request.top_n, len(pipeline_result.ranked_candidates))
-            candidates_by_id = {c.id: c for c in candidates}
             queue: asyncio.Queue = asyncio.Queue()
 
             async def _explain_one(rank_idx: int, sc) -> None:

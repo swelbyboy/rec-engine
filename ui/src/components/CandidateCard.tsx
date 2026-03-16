@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
-import type { RankedCandidate } from "../types";
+import type { CandidateRequirement, RankedCandidate } from "../types";
 
 const FEATURE_LABELS: Record<string, string> = {
   required_skills_overlap: "Required skills",
@@ -37,6 +37,15 @@ function matchTypeLabel(raw: string): string {
     no_match: "No match found",
   };
   return map[raw] ?? raw.replace(/_/g, " ");
+}
+
+function formatRequirementValue(req: CandidateRequirement): string {
+  const val = req.value;
+  if (val === null || val === undefined) return "";
+  if (req.currency) return `${req.currency} ${Number(val).toLocaleString()}`;
+  if (typeof val === "boolean") return val ? "yes" : "no";
+  if (req.canonical_key === "notice_period_weeks") return `${val} weeks`;
+  return String(val);
 }
 
 /** Split explanation into paragraphs (blank-line separated or sentence groups) */
@@ -151,6 +160,30 @@ export default function CandidateCard({ candidate }: Props) {
               </div>
             )}
           </div>
+
+          {/* Candidate requirements not addressed by JD */}
+          {candidate.candidate_requirements && candidate.candidate_requirements.length > 0 && (
+            <div>
+              <p className="mb-2.5 text-[10px] font-semibold uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.3)" }}>
+                Candidate requirements
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {candidate.candidate_requirements.map((req, i) => {
+                  const valStr = formatRequirementValue(req);
+                  return (
+                    <span
+                      key={i}
+                      className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs"
+                      style={{ background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.6)", border: "1px solid rgba(255,255,255,0.08)" }}
+                    >
+                      <span style={{ color: "rgba(255,255,255,0.35)" }}>{req.description.split(":")[0].trim()}</span>
+                      {valStr && <span className="font-medium text-white">{valStr}</span>}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Feature vector */}
           <div>

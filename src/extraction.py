@@ -433,6 +433,13 @@ IMPORTANT — required_skills and preferred_skills extraction rules:
   without an "or" / "for example" qualifier.
   Example: "must have 3+ years of Ruby experience" → required_skills: ["Ruby"]  ✓
 
+IMPORTANT — avoid double-extracting office/remote constraints:
+- A statement like "3 days per week in office" should produce ONE constraint: office_days_per_week.
+  Do NOT additionally extract remote_ok=false from the same sentence — it is redundant.
+- Only extract remote_ok as a separate constraint when the JD explicitly addresses remote working
+  as a distinct policy (e.g. "fully remote", "no remote working permitted", "remote-friendly")
+  AND there is no office_days_per_week constraint already covering it.
+
 {CANONICAL_KEY_VOCABULARY}
 
 {FEW_SHOT_EXAMPLES}"""
