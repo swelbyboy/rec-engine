@@ -1,22 +1,22 @@
 # Candidate Recommendation Engine
 
-AI-powered candidate ranking system. Parses raw job descriptions and candidate documents (CV, LinkedIn, interview transcripts) through an LLM pipeline, applies a constraint compatibility engine, and returns ranked, explainable candidate recommendations.
+AI-powered candidate ranking system. Parses unstructured raw job descriptions and candidate documents (CV, LinkedIn, interview transcripts) through a pipeline, applies a constraint compatibility engine, and returns ranked, explainable candidate recommendations.
 
 ## ML / data science concepts
 
-This is a real ML pipeline, not a keyword filter or UI wrapper. The core concepts:
+This PoC demonstrateds a real ML pipeline, not a keyword filter or UI wrapper. The core concepts:
 
-**Embeddings & cosine similarity.** Every skill, industry, and job description is converted to a ~1536-dimensional vector (via OpenAI `text-embedding-3-small`) that captures *meaning*, not just characters. Two skills are compared by the angle between their vectors — "distributed systems" matches "distributed systems design" even with no string overlap; "Python" does *not* match "Ruby" despite both being languages. A threshold of 0.75 cosine similarity is the minimum for a skill to count as matched.
+**Embeddings & cosine similarity.** Every skill, industry, and job description is converted to a ~1536-dimensional vector (via OpenAI `text-embedding-3-small`) that captures _meaning_, not just characters. Two skills are compared by the angle between their vectors — "distributed systems" matches "distributed systems design" even with no string overlap; "Python" does _not_ match "Ruby" despite both being languages. A threshold of 0.75 cosine similarity is the minimum for a skill to count as matched.
 
-**Vector retrieval (semantic search).** Candidate embeddings are pre-computed and cached. On each query, the JD is embedded once, then ranked by cosine similarity against the full candidate matrix in a single numpy operation. This is how production search engines work — fast because it's matrix maths, not sequential comparison.
+**Vector retrieval (semantic search).** Candidate embeddings are pre-computed and cached. On each query, the JD is embedded once, then ranked by cosine similarity against the full candidate matrix in a single numpy operation.
 
 **Feature engineering.** Each candidate is represented as a 10-dimensional feature vector: required/preferred skill overlap, experience delta, seniority match, career trajectory, industry match, interview/culture signals, constraint compliance. These are deliberate design choices — `experience_delta` uses an asymmetric function (below minimum = 0 hard floor; above = linear improvement) that encodes domain knowledge about what matters.
 
-**Weighted linear model.** The final score is a weighted sum: `score = 0.38 × required_skills + 0.10 × preferred_skills + ...`. Interpretable by design — every score can be decomposed and explained. The downside: weights are hand-tuned, not learned from labelled data (the honest limitation of a v1 system without ground-truth hire outcomes).
+**Weighted linear model.** The final score is a weighted sum: `score = 0.38 × required_skills + 0.10 × preferred_skills + ...`. Interpretable by design — every score can be decomposed and explained. Weights for the PoC are hand-tuned, these would be 'learned' after applying historic recruitment training data.
 
 **LLM as a structured extractor.** Claude is used for zero-shot information extraction, not text generation. A JD or CV is passed in; a typed JSON object comes out (skills, constraints, salary, seniority, discipline). This replaces hundreds of regex rules and handles ambiguous phrasing automatically. Quality here gates quality everywhere downstream.
 
-**Retrieval-augmented ranking pipeline.** The overall architecture — Retrieve → Filter → Score → Explain — is a standard production ML pattern. Each stage progressively reduces the candidate set with increasingly expensive operations: vector maths (top-50) → rule-based constraint filtering → linear scoring → LLM explanation (top-10 only). This staged design is what makes it fast enough to be interactive.
+**Retrieval-augmented ranking pipeline.** The overall architecture uses — Retrieve → Filter → Score → Explain. Each stage progressively reduces the candidate set with increasingly expensive operations: vector maths (top-50) → rule-based constraint filtering → linear scoring → LLM explanation (top-10 only). This staged design is what makes it fast enough to be interactive.
 
 ---
 
@@ -97,12 +97,12 @@ The API starts on `http://localhost:8000`. On first run it processes all 30 cand
 
 ## Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Health check + fixture counts |
-| `GET` | `/jobs` | List loaded job fixtures |
-| `GET` | `/candidates` | List loaded candidate fixtures |
-| `POST` | `/recommend` | Rank candidates for a JD (JSON body) |
+| Method | Path                | Description                                            |
+| ------ | ------------------- | ------------------------------------------------------ |
+| `GET`  | `/health`           | Health check + fixture counts                          |
+| `GET`  | `/jobs`             | List loaded job fixtures                               |
+| `GET`  | `/candidates`       | List loaded candidate fixtures                         |
+| `POST` | `/recommend`        | Rank candidates for a JD (JSON body)                   |
 | `POST` | `/recommend/upload` | Rank candidates for an uploaded JD (plain text or PDF) |
 
 ## Example: POST /recommend
@@ -161,7 +161,7 @@ curl -s -X POST http://localhost:8000/recommend \
       "elimination_reason": "ELIMINATED — Hard constraint failures:\n  • Hard constraint failure on 'office_days_per_week': ..."
     }
   ],
-  "weights_used": { "required_skills_overlap": 0.28, "..." : "..." }
+  "weights_used": { "required_skills_overlap": 0.28, "...": "..." }
 }
 ```
 
@@ -215,18 +215,18 @@ Weights do not need to sum to 1.0 (the score is clamped to [0, 1]), but scores w
 
 ## Scoring model: feature weights (defaults)
 
-| Feature | Default weight | Notes |
-|---------|---------------|-------|
-| `required_skills_overlap` | 0.38 | Embedding cosine similarity, asymmetric recall |
-| `preferred_skills_overlap` | 0.10 | Same method as required |
-| `industry_preferred_match` | 0.12 | Best semantic match across candidate industries |
-| `experience_delta` | 0.10 | `clip((years - min) / 5, 0, 1)` |
-| `seniority_match` | 0.08 | Binary: exact=1.0, else=0.5 |
-| `career_trajectory_score` | 0.05 | ascending=1.0, lateral=0.6, mixed=0.4 |
-| `interview_score` | 0.03 | LLM-assessed proxy — reduced to limit bias risk |
-| `culture_fit_score` | 0.02 | LLM-assessed proxy — reduced to limit bias risk |
-| `management_match` | 0.04 | Binary: match=1.0, mismatch=0.3 |
-| `soft_constraint_score` | 0.08 | Mean of compatible constraint match scores |
+| Feature                    | Default weight | Notes                                           |
+| -------------------------- | -------------- | ----------------------------------------------- |
+| `required_skills_overlap`  | 0.38           | Embedding cosine similarity, asymmetric recall  |
+| `preferred_skills_overlap` | 0.10           | Same method as required                         |
+| `industry_preferred_match` | 0.12           | Best semantic match across candidate industries |
+| `experience_delta`         | 0.10           | `clip((years - min) / 5, 0, 1)`                 |
+| `seniority_match`          | 0.08           | Binary: exact=1.0, else=0.5                     |
+| `career_trajectory_score`  | 0.05           | ascending=1.0, lateral=0.6, mixed=0.4           |
+| `interview_score`          | 0.03           | LLM-assessed proxy — reduced to limit bias risk |
+| `culture_fit_score`        | 0.02           | LLM-assessed proxy — reduced to limit bias risk |
+| `management_match`         | 0.04           | Binary: match=1.0, mismatch=0.3                 |
+| `soft_constraint_score`    | 0.08           | Mean of compatible constraint match scores      |
 
 ## Project structure
 
@@ -253,14 +253,3 @@ rec-engine/
 ├── pyproject.toml
 └── .env.example
 ```
-
-## API cost profile (approximate, per `/recommend` request with 30 candidates)
-
-| Stage | Model | Calls | Tokens (approx) |
-|-------|-------|-------|-----------------|
-| JD parsing | claude-haiku-4-5 | 1 | ~2k |
-| JD embedding | text-embedding-3-small | 1 | ~200 |
-| Constraint semantic matching | text-embedding-3-small | 1 batch/candidate | ~50–200 |
-| Skill/industry scoring | text-embedding-3-small | cached | 0 (after first run) |
-| Explanation (top-10) | claude-haiku-4-5 | 10 | ~10k total |
-| **Candidate processing** | _(first run only)_ | 30 | ~2.5M input, ~60k output |
