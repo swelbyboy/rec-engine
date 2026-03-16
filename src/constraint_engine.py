@@ -43,6 +43,26 @@ AMBIGUOUS_BAND_LOW = 0.55  # below this: no semantic match
 CLEARANCE_KEYS = {"security_clearance"}
 SALARY_CANONICAL_KEYS = {"salary_min", "salary_max"}
 
+# Human-readable labels for canonical keys (used in reason text)
+CANONICAL_KEY_DISPLAY = {
+    "office_days_per_week": "Office days per week",
+    "visa_sponsorship": "Visa sponsorship",
+    "salary_min": "Minimum salary",
+    "salary_max": "Maximum salary",
+    "four_day_week": "Four-day week",
+    "security_clearance": "Security clearance",
+    "management_required": "People management",
+    "notice_period_weeks": "Notice period",
+    "location_city": "Location",
+    "remote_ok": "Remote working",
+    "relocation_required": "Relocation",
+    "language_requirement": "Language requirement",
+    "industry_background": "Industry background",
+    "travel_percent": "Travel requirement",
+    "bcorp_required": "B-corp certification",
+    "carbon_neutral_employer": "Carbon neutral employer",
+}
+
 
 # ---------------------------------------------------------------------------
 # Operator pair logic
@@ -131,11 +151,25 @@ def _evaluate_operator_pair(
                 return True, 1.0 if compatible else 0.4
             except (TypeError, ValueError):
                 pass
+        # Both prefer — numerically candidate >= employer means no conflict
+        if can_op == ConstraintOperator.prefers:
+            try:
+                if float(can_val) >= float(emp_val):
+                    return True, 1.0
+            except (TypeError, ValueError):
+                pass
         return True, 1.0 if _values_equal(emp_val, can_val) else 0.6
 
     # Candidate prefers — soft penalty if employer requires something else
     if can_op == ConstraintOperator.prefers:
         if emp_op in (ConstraintOperator.requires, ConstraintOperator.excludes):
+            # Numeric case: candidate preferring >= employer's requirement is fully compatible
+            # e.g. employer requires 3 office days, candidate prefers 5 → fine
+            try:
+                if float(can_val) >= float(emp_val):
+                    return True, 1.0
+            except (TypeError, ValueError):
+                pass
             match = _values_equal(emp_val, can_val)
             return True, 1.0 if match else 0.6
         return True, 0.9  # mild mismatch
@@ -217,9 +251,9 @@ def canonical_key_match(
 
     emp_val_str = f"{employer_c.value}{' ' + employer_c.currency if employer_c.currency else ''}"
     can_val_str = f"{candidate_c.value}{' ' + candidate_c.currency if candidate_c.currency else ''}"
+    label = CANONICAL_KEY_DISPLAY.get(employer_c.canonical_key, employer_c.canonical_key.replace("_", " ").title()) if employer_c.canonical_key else "Constraint"
     reason = (
-        f"Canonical key match on '{employer_c.canonical_key}': "
-        f"employer {employer_c.operator.value} {emp_val_str} vs "
+        f"{label}: employer {employer_c.operator.value} {emp_val_str}, "
         f"candidate {candidate_c.operator.value} {can_val_str}"
     )
     if currency_mismatch:

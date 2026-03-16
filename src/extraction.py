@@ -423,6 +423,16 @@ Use "soft" for preferences, desirables, and implicit signals.
 DO NOT infer constraints that are not stated in the text.
 Confidence reflects how explicitly the constraint is stated (0.97 = verbatim; 0.60 = implicit).
 
+IMPORTANT — required_skills and preferred_skills extraction rules:
+- When a JD lists examples with phrases like "for example", "such as", "e.g.", "like X, Y or Z",
+  extract the CATEGORY or GENERAL SKILL, not the individual examples.
+  Example: "deep knowledge of a high-level language (e.g. Ruby, Python, Go)"
+    → required_skills: ["high-level programming language"]   ✓
+    → required_skills: ["Ruby", "Python", "Go"]              ✗ (these are just examples)
+- Only extract a specific technology as a required skill if it is explicitly stated as mandatory
+  without an "or" / "for example" qualifier.
+  Example: "must have 3+ years of Ruby experience" → required_skills: ["Ruby"]  ✓
+
 {CANONICAL_KEY_VOCABULARY}
 
 {FEW_SHOT_EXAMPLES}"""
