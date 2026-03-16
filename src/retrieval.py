@@ -104,7 +104,13 @@ def retrieve_top_k(
         elif len(primary_mask) > 0:
             candidate_mask = np.concatenate([primary_mask, fallback_mask])
         else:
-            candidate_mask = np.arange(len(ids))  # no matching discipline — use all
+            # No candidates of this discipline in the pool — return nothing rather
+            # than surfacing cross-discipline candidates.
+            print(
+                f"  [retrieval] No candidates found for discipline '{job_discipline}' — returning empty.",
+                flush=True,
+            )
+            return []
         print(
             f"  [retrieval] Discipline filter '{job_discipline}': "
             f"{len(primary_mask)} primary + {len(fallback_mask)} fallback candidates",

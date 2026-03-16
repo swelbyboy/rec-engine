@@ -50,6 +50,26 @@ export default function ResultsPanel({ result, isLoading }: Props) {
   const { ranked_candidates, eliminated_candidates, job_title } = result;
   const topSkillsOverlap = ranked_candidates[0]?.feature_vector.required_skills_overlap ?? 0;
   const noStrongMatch = topSkillsOverlap < SKILLS_OVERLAP_THRESHOLD;
+  const noPoolMatch = ranked_candidates.length === 0 && eliminated_candidates.length === 0;
+
+  if (noPoolMatch) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-12 text-center">
+        <div
+          className="flex h-11 w-11 items-center justify-center rounded-full"
+          style={{ background: "rgba(220,38,38,0.08)" }}
+        >
+          <AlertCircle className="h-5 w-5 text-red-400" />
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-red-400">No candidates for this role type</p>
+          <p className="mt-1 text-xs" style={{ color: "rgba(255,255,255,0.35)" }}>
+            The talent pool contains no candidates in this discipline.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full min-h-0">
