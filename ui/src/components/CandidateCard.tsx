@@ -166,7 +166,15 @@ export default function CandidateCard({ candidate }: Props) {
           </div>
 
           {/* Constraint checks */}
-          {candidate.constraint_matches.length > 0 && (
+          {(() => {
+            // Filter out uninteresting "no candidate restriction" rows — the candidate simply
+            // hasn't stated a restriction, so it defaults to compatible. Only show them when
+            // flagged for verification.
+            const meaningful = candidate.constraint_matches.filter(
+              (m) => m.match_type !== "no_candidate_constraint" || !m.compatible || m.flagged
+            );
+            if (meaningful.length === 0) return null;
+            return (
             <div>
               <p className="mb-3 text-[10px] font-semibold uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.3)" }}>
                 Constraint checks
@@ -181,7 +189,7 @@ export default function CandidateCard({ candidate }: Props) {
                     </tr>
                   </thead>
                   <tbody>
-                    {candidate.constraint_matches.map((m, i) => (
+                    {meaningful.map((m, i) => (
                       <tr
                         key={i}
                         className="border-t"
@@ -214,7 +222,8 @@ export default function CandidateCard({ candidate }: Props) {
                 </table>
               </div>
             </div>
-          )}
+            );
+          })()}
         </div>
       )}
     </div>
