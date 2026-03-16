@@ -74,9 +74,9 @@ export default function JobDetailsPanel({ title, details }: Props) {
                 <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "#ff66c4" }} />
                 <span>
                   {c.description}
-                  {c.canonical_key && (
-                    <span className="ml-1.5 font-mono text-[10px]" style={{ color: c.confidence != null && c.confidence < 0.85 ? "#f59e0b" : "rgba(255,255,255,0.25)" }}>
-                      [{c.canonical_key} {c.operator} {String(c.value ?? "?")}{c.confidence != null && c.confidence < 0.85 ? " ⚠" : ""}]
+                  {c.confidence != null && c.confidence < 0.85 && (
+                    <span className="ml-1.5 inline-flex items-center rounded px-1 py-0.5 text-[10px] font-medium" style={{ background: "rgba(217,119,6,0.15)", color: "#f59e0b" }}>
+                      verify extraction
                     </span>
                   )}
                 </span>
@@ -98,9 +98,9 @@ export default function JobDetailsPanel({ title, details }: Props) {
                 <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "rgba(255,255,255,0.2)" }} />
                 <span>
                   {c.description}
-                  {c.canonical_key && (
-                    <span className="ml-1.5 font-mono text-[10px]" style={{ color: c.confidence != null && c.confidence < 0.85 ? "#f59e0b" : "rgba(255,255,255,0.2)" }}>
-                      [{c.canonical_key} {c.operator} {String(c.value ?? "?")}{c.confidence != null && c.confidence < 0.85 ? " ⚠" : ""}]
+                  {c.confidence != null && c.confidence < 0.85 && (
+                    <span className="ml-1.5 inline-flex items-center rounded px-1 py-0.5 text-[10px] font-medium" style={{ background: "rgba(217,119,6,0.15)", color: "#f59e0b" }}>
+                      verify extraction
                     </span>
                   )}
                 </span>
