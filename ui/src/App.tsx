@@ -147,9 +147,9 @@ export default function App() {
         </main>
       )}
 
-      {tab === "recruiter" && <main className="flex-1 overflow-hidden mx-auto w-full max-w-screen-xl px-8 py-6 flex gap-5">
+      {tab === "recruiter" && <main className="flex-1 overflow-auto md:overflow-hidden mx-auto w-full max-w-screen-xl px-4 md:px-8 py-6 flex flex-col md:flex-row gap-5">
         {/* Left column */}
-        <div className="w-1/2 flex flex-col gap-3 min-h-0">
+        <div className="w-full md:w-1/2 flex flex-col gap-3 min-h-0">
           <div
             className="flex-1 flex flex-col rounded-xl border p-6 min-h-0"
             style={{ background: "#111214", borderColor: "rgba(255,255,255,0.08)" }}
@@ -206,7 +206,7 @@ export default function App() {
         </div>
 
         {/* Right column */}
-        <div className="w-1/2 flex flex-col min-h-0">
+        <div className="w-full md:w-1/2 flex flex-col min-h-0">
           <div
             className="flex-1 flex flex-col rounded-xl border min-h-0 overflow-hidden"
             style={{ background: "#111214", borderColor: "rgba(255,255,255,0.08)" }}
