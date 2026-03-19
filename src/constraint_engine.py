@@ -38,30 +38,6 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 SEMANTIC_THRESHOLD = 0.75  # cosine similarity required for a semantic match
 AMBIGUOUS_BAND_LOW = 0.55  # below this: no semantic match
 
-# Clearance-type canonical keys that should be flagged for review when
-# an employer requires them but the candidate has no counterpart constraint.
-CLEARANCE_KEYS = {"security_clearance"}
-SALARY_CANONICAL_KEYS = {"salary_min", "salary_max"}
-
-# Human-readable labels for canonical keys (used in reason text)
-CANONICAL_KEY_DISPLAY = {
-    "office_days_per_week": "Office days per week",
-    "visa_sponsorship": "Visa sponsorship",
-    "salary_min": "Minimum salary",
-    "salary_max": "Maximum salary",
-    "four_day_week": "Four-day week",
-    "security_clearance": "Security clearance",
-    "management_required": "People management",
-    "notice_period_weeks": "Notice period",
-    "location_city": "Location",
-    "remote_ok": "Remote working",
-    "relocation_required": "Relocation",
-    "language_requirement": "Language requirement",
-    "industry_background": "Industry background",
-    "travel_percent": "Travel requirement",
-    "bcorp_required": "B-corp certification",
-    "carbon_neutral_employer": "Carbon neutral employer",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -152,12 +128,14 @@ def _evaluate_operator_pair(
             except (TypeError, ValueError):
                 pass
         # Both prefer — numerically candidate >= employer means no conflict
+        # Skip float comparison for booleans (True > False numerically but they mean different things)
         if can_op == ConstraintOperator.prefers:
-            try:
-                if float(can_val) >= float(emp_val):
-                    return True, 1.0
-            except (TypeError, ValueError):
-                pass
+            if not isinstance(emp_val, bool) and not isinstance(can_val, bool):
+                try:
+                    if float(can_val) >= float(emp_val):
+                        return True, 1.0
+                except (TypeError, ValueError):
+                    pass
         return True, 1.0 if _values_equal(emp_val, can_val) else 0.6
 
     # Candidate prefers — soft penalty if employer requires something else
@@ -218,70 +196,6 @@ def _values_equal(a: object, b: object) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Remote ↔ office_days cross-match
-# ---------------------------------------------------------------------------
-def _remote_office_cross_match(
-    employer_c: Constraint,
-    candidate_c: Constraint,
-) -> ConstraintMatch | None:
-    """Cross-match office_days_per_week vs remote_ok.
-
-    A candidate with remote_ok=True effectively has office_days_per_week max 0.
-    Compared against an employer who requires/min N days → incompatible if N > 0.
-    """
-    def to_office_days(c: Constraint) -> tuple[float, ConstraintOperator] | None:
-        if c.canonical_key == "office_days_per_week":
-            try:
-                return float(c.value), c.operator
-            except (TypeError, ValueError):
-                return None
-        elif c.canonical_key == "remote_ok":
-            val_str = str(c.value).lower() if c.value is not None else ""
-            if val_str in ("true", "1", "yes"):
-                return 0.0, ConstraintOperator.max  # fully remote = max 0 days in office
-        return None
-
-    emp_side = to_office_days(employer_c)
-    can_side = to_office_days(candidate_c)
-    if emp_side is None or can_side is None:
-        return None
-
-    emp_days, emp_op = emp_side
-    can_days, can_op = can_side
-
-    if emp_op in (ConstraintOperator.min, ConstraintOperator.requires):
-        compatible = can_days >= emp_days
-    elif emp_op == ConstraintOperator.max:
-        compatible = can_days <= emp_days
-    elif emp_op == ConstraintOperator.prefers:
-        compatible = True  # preference never eliminates
-    else:
-        compatible = True
-
-    if not compatible and can_days == 0.0:
-        reason = (
-            f"Office days per week: candidate requires fully remote, "
-            f"employer {emp_op.value} {emp_days:.0f} days"
-        )
-    else:
-        label = CANONICAL_KEY_DISPLAY.get("office_days_per_week", "Office days per week")
-        reason = (
-            f"{label}: employer {emp_op.value} {emp_days:.0f}, "
-            f"candidate {can_op.value} {can_days:.0f}"
-        )
-
-    return ConstraintMatch(
-        employer_constraint_id=employer_c.id,
-        candidate_constraint_id=candidate_c.id,
-        match_type=MatchType.canonical_key,
-        compatible=compatible,
-        score=1.0 if compatible else 0.0,
-        reason=reason,
-        flagged_for_review=(candidate_c.confidence < 0.85 or employer_c.confidence < 0.85),
-    )
-
-
-# ---------------------------------------------------------------------------
 # Canonical key matching
 # ---------------------------------------------------------------------------
 def canonical_key_match(
@@ -290,30 +204,23 @@ def canonical_key_match(
 ) -> ConstraintMatch | None:
     """Attempt a canonical key match.
 
-    Returns a ConstraintMatch if both constraints share a canonical_key,
-    or None if they don't share a key.
+    Returns a ConstraintMatch if both constraints share the exact same canonical_key,
+    or None if they don't. Constraints with different keys (even if semantically
+    related) fall through to the semantic matching phase.
     """
     if not employer_c.canonical_key or not candidate_c.canonical_key:
         return None
 
-    # Cross-key salary pairs: employer salary_max vs candidate salary_min
-    SALARY_CROSS_PAIRS = {("salary_max", "salary_min"), ("salary_min", "salary_max")}
-    # Cross-key remote/office pairs: office_days_per_week vs remote_ok
-    REMOTE_CROSS_PAIRS = {("office_days_per_week", "remote_ok"), ("remote_ok", "office_days_per_week")}
-    key_pair = (employer_c.canonical_key, candidate_c.canonical_key)
-
-    if key_pair in REMOTE_CROSS_PAIRS:
-        return _remote_office_cross_match(employer_c, candidate_c)
-
-    if key_pair not in SALARY_CROSS_PAIRS and employer_c.canonical_key != candidate_c.canonical_key:
+    if employer_c.canonical_key != candidate_c.canonical_key:
         return None
 
     compatible, score = _evaluate_operator_pair(employer_c, candidate_c)
 
-    # Flag salary constraints where currencies differ — numeric comparison is meaningless
+    # Flag constraints where currencies differ — numeric comparison is meaningless
     # across currencies (e.g. £85k vs $85k are not equivalent). Require human review.
+    # Triggered by presence of currency field, not by specific key name.
     currency_mismatch = (
-        employer_c.canonical_key in SALARY_CANONICAL_KEYS
+        (employer_c.currency is not None or candidate_c.currency is not None)
         and employer_c.currency is not None
         and candidate_c.currency is not None
         and employer_c.currency.upper() != candidate_c.currency.upper()
@@ -321,7 +228,7 @@ def canonical_key_match(
 
     emp_val_str = f"{employer_c.value}{' ' + employer_c.currency if employer_c.currency else ''}"
     can_val_str = f"{candidate_c.value}{' ' + candidate_c.currency if candidate_c.currency else ''}"
-    label = CANONICAL_KEY_DISPLAY.get(employer_c.canonical_key, employer_c.canonical_key.replace("_", " ").title()) if employer_c.canonical_key else "Constraint"
+    label = employer_c.canonical_key.replace("_", " ").title() if employer_c.canonical_key else "Constraint"
     reason = (
         f"{label}: employer {employer_c.operator.value} {emp_val_str}, "
         f"candidate {candidate_c.operator.value} {can_val_str}"
@@ -476,7 +383,6 @@ def check_compatibility(
             )
 
     # 3. No match — compatible (candidate hasn't expressed a conflicting preference)
-    flagged = employer_c.canonical_key in CLEARANCE_KEYS and employer_c.type == ConstraintType.hard
     return ConstraintMatch(
         employer_constraint_id=employer_c.id,
         candidate_constraint_id=None,
@@ -484,7 +390,7 @@ def check_compatibility(
         compatible=True,
         score=1.0,
         reason="No candidate constraint found for this employer constraint",
-        flagged_for_review=flagged,
+        flagged_for_review=False,
     )
 
 
@@ -587,7 +493,6 @@ def run_constraint_engine(
         elif emp_c.id in semantic_results:
             match = semantic_results[emp_c.id]
         else:
-            flagged = emp_c.canonical_key in CLEARANCE_KEYS and emp_c.type == ConstraintType.hard
             match = ConstraintMatch(
                 employer_constraint_id=emp_c.id,
                 candidate_constraint_id=None,
@@ -595,7 +500,7 @@ def run_constraint_engine(
                 compatible=True,
                 score=1.0,
                 reason="No candidate constraint found for this employer constraint",
-                flagged_for_review=flagged,
+                flagged_for_review=False,
             )
 
         constraint_matches.append(match)

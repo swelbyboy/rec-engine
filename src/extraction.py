@@ -35,27 +35,29 @@ def _get_client():
     return _anthropic_client
 
 # ---------------------------------------------------------------------------
-# Canonical key vocabulary — included in every system prompt so the LLM maps
-# common constraint dimensions to the same key across JDs and candidates.
+# Canonical key guidance — domain-agnostic instruction for consistent key
+# assignment across any professional matching domain.
 # ---------------------------------------------------------------------------
-CANONICAL_KEY_VOCABULARY = """
-Known canonical keys (use these when the constraint fits; leave null otherwise):
-- office_days_per_week     : Number of days required/preferred/max in office per week
-- visa_sponsorship         : Whether visa sponsorship is offered (employer) or required (candidate)
-- salary_min               : Minimum acceptable salary (candidate) or minimum offered (employer)
-- salary_max               : Maximum salary budget (employer) or maximum expectation (candidate)
-- four_day_week            : Preference/availability of a four-day working week
-- security_clearance       : Government security clearance (SC, DV, TS, etc.)
-- management_required      : Whether the role involves people management
-- notice_period_weeks      : Notice period in weeks
-- location_city            : Required or preferred city/location
-- remote_ok                : Whether fully remote working is permitted
-- relocation_required      : Whether the candidate must relocate
-- language_requirement     : Required spoken/written language (non-English)
-- industry_background      : Preferred industry background
-- travel_percent           : Expected percentage of travel
-- bcorp_required           : Preference/requirement to work only with B-corp certified employers
-- carbon_neutral_employer  : Requirement for employer to have net-zero/carbon-neutral commitment
+CONSTRAINT_KEY_GUIDANCE = """
+Canonical key assignment:
+Assign a short, descriptive snake_case canonical_key to each constraint.
+- The key should capture the constraint dimension (what is being constrained):
+  compensation, location, working arrangement, qualifications, scheduling, values, etc.
+- Be consistent: choose the label that another LLM, given the same constraint,
+  would independently produce. This consistency enables matching across documents.
+- Good examples: salary_minimum, weekly_office_days, work_authorization,
+  notice_period_weeks, publication_count_min, on_call_frequency, travel_percent
+- Use null only for purely qualitative constraints where no clear dimension key applies.
+Do not limit yourself to any predefined list — choose the most natural key for the domain.
+
+Value format:
+When a constraint can be expressed numerically (as a count, amount, rate, or duration),
+always use a numeric value rather than a qualitative phrase. For example:
+- "fully remote" → value: 0 (not "fully_remote")
+- "five days per week" → value: 5 (not "five days")
+- "at least two years" → value: 2 (not "two years")
+Reserve strings for values that are genuinely categorical (e.g. currency codes, named
+tiers, jurisdiction names).
 """
 
 # ---------------------------------------------------------------------------
@@ -132,17 +134,6 @@ Source text: "Looking for a new challenge in fintech."
 # Matches: £105,000 / £105k / £85K / $90,000 / €80k etc.
 _MONEY_RE = re.compile(r'([£$€])\s*([\d,]+)\s*([kK])?', re.IGNORECASE)
 
-# Matches: "5 days per week", "5 days a week", "5 days/week" (in office context)
-_OFFICE_DAYS_RE = re.compile(
-    r'(\d+)\s*days?\s*(?:per|a|/)\s*week\s*(?:in\s*(?:the\s*)?office|on.?site|in.?person)?',
-    re.IGNORECASE,
-)
-
-# Matches: "fully remote", "100% remote", "work remotely", "remote only"
-_REMOTE_RE = re.compile(
-    r'\b(?:fully\s+remote|100\s*%\s*remote|work(?:ing)?\s+remotely|remote[\s-]only|entirely\s+remote)\b',
-    re.IGNORECASE,
-)
 
 
 def _find_salary_hints(text: str, label: str) -> list[str]:
@@ -163,15 +154,6 @@ def _find_salary_hints(text: str, label: str) -> list[str]:
             pass
     return hints
 
-
-def _find_office_hints(text: str, label: str) -> list[str]:
-    """Return office/remote requirement hints detected by regex in text."""
-    hints = []
-    for match in _OFFICE_DAYS_RE.finditer(text):
-        hints.append(f"{match.group(1)} days/week in office (found in {label})")
-    if _REMOTE_RE.search(text):
-        hints.append(f"fully remote preference/requirement (found in {label})")
-    return hints
 
 
 # ---------------------------------------------------------------------------
@@ -217,14 +199,9 @@ JD_TOOL_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "Industries considered acceptable background",
             },
-            "discipline": {
-                "type": "string",
-                "enum": ["engineering", "data", "ml_ai", "product", "design", "devops", "sales", "other"],
-                "description": "Broad function this role belongs to. engineering=software/backend/frontend/mobile, data=data engineering/analytics/BI, ml_ai=machine learning/AI/data science research, product=product management/strategy, design=UX/UI/brand, devops=infrastructure/platform/SRE/cloud, sales=sales/account executive/BD/GTM, other=finance/legal/HR/operations/anything else",
-            },
             "constraints": {
                 "type": "array",
-                "description": "Employer-side constraints extracted from the JD",
+                "description": "Employer-side constraints extracted from the job description",
                 "items": {
                     "type": "object",
                     "properties": {
@@ -256,7 +233,6 @@ JD_TOOL_SCHEMA = {
             "min_years_experience",
             "seniority",
             "management_required",
-            "discipline",
             "constraints",
         ],
     },
@@ -371,11 +347,6 @@ CANDIDATE_FULL_TOOL_SCHEMA = {
             },
             "interview_score": {"type": "number"},
             "culture_fit_score": {"type": "number"},
-            "discipline": {
-                "type": "string",
-                "enum": ["engineering", "data", "ml_ai", "product", "design", "devops", "sales", "other"],
-                "description": "Broad function the candidate works in based on their career history. engineering=software/backend/frontend/mobile, data=data engineering/analytics/BI, ml_ai=machine learning/AI/data science, product=product management, design=UX/UI, devops=infrastructure/platform/SRE, sales=sales/BD/GTM, other=anything else",
-            },
             "constraints": {
                 "type": "array",
                 "description": "All candidate-side constraints, deduplicated across all sources",
@@ -424,7 +395,7 @@ MERGE_TOOL_SCHEMA = {
 # ---------------------------------------------------------------------------
 # System prompts
 # ---------------------------------------------------------------------------
-JD_SYSTEM_PROMPT = f"""You are an expert recruiter parsing job descriptions into structured JSON.
+JD_SYSTEM_PROMPT = f"""You are an expert at extracting structured requirements and constraints from professional job postings.
 
 Extract all constraints from the job description accurately.
 Mark constraints as "hard" only when the source text is explicit:
@@ -434,28 +405,11 @@ Use "soft" for preferences, desirables, and implicit signals.
 DO NOT infer constraints that are not stated in the text.
 Confidence reflects how explicitly the constraint is stated (0.97 = verbatim; 0.60 = implicit).
 
-IMPORTANT — required_skills and preferred_skills extraction rules:
-- When a JD lists examples with phrases like "for example", "such as", "e.g.", "like X, Y or Z",
-  extract the CATEGORY or GENERAL SKILL, not the individual examples.
-  Example: "deep knowledge of a high-level language (e.g. Ruby, Python, Go)"
-    → required_skills: ["high-level programming language"]   ✓
-    → required_skills: ["Ruby", "Python", "Go"]              ✗ (these are just examples)
-- Only extract a specific technology as a required skill if it is explicitly stated as mandatory
-  without an "or" / "for example" qualifier.
-  Example: "must have 3+ years of Ruby experience" → required_skills: ["Ruby"]  ✓
-
-IMPORTANT — avoid double-extracting office/remote constraints:
-- A statement like "3 days per week in office" should produce ONE constraint: office_days_per_week.
-  Do NOT additionally extract remote_ok=false from the same sentence — it is redundant.
-- Only extract remote_ok as a separate constraint when the JD explicitly addresses remote working
-  as a distinct policy (e.g. "fully remote", "no remote working permitted", "remote-friendly")
-  AND there is no office_days_per_week constraint already covering it.
-
-{CANONICAL_KEY_VOCABULARY}
+{CONSTRAINT_KEY_GUIDANCE}
 
 {FEW_SHOT_EXAMPLES}"""
 
-CANDIDATE_SYSTEM_PROMPT = f"""You are an expert recruiter parsing candidate documents into structured JSON.
+CANDIDATE_SYSTEM_PROMPT = f"""You are an expert at extracting structured requirements and constraints from professional candidate documents.
 
 Extract all candidate-side constraints accurately.
 Mark constraints as "hard" only when the candidate is clearly inflexible:
@@ -463,42 +417,42 @@ Mark constraints as "hard" only when the candidate is clearly inflexible:
 Use "soft" for preferences and stated ideals.
 
 DO NOT infer constraints that are not present in this specific source document.
-If salary is vague or unclear, set confidence below 0.75.
+If compensation figures are vague or unclear, set confidence below 0.75.
 Confidence reflects how explicitly the constraint is stated (0.97 = verbatim; 0.60 = vague/implied).
 
 interview_score and culture_fit_score: only score these when the source is an interview transcript.
   For CV or LinkedIn sources, set both to null (omit from output or set 0.5 as neutral).
 
-{CANONICAL_KEY_VOCABULARY}
+{CONSTRAINT_KEY_GUIDANCE}
 
 {FEW_SHOT_EXAMPLES}"""
 
-MERGE_SYSTEM_PROMPT = f"""You are merging multiple extractions of the same candidate from different source documents (CV, LinkedIn, interview transcript) into a single canonical record.
+MERGE_SYSTEM_PROMPT = f"""You are merging multiple extractions of the same candidate from different source documents into a single canonical record.
 
 Rules:
 1. Deduplicate constraints with the same canonical_key — keep the version with the highest confidence, or merge if values are complementary.
-2. If two sources give conflicting values for the same constraint (e.g. different salary expectations), prefer the interview transcript, then CV, then LinkedIn.
+2. If two sources give conflicting values for the same constraint, prefer the interview transcript, then CV, then LinkedIn.
 3. Skills, industries: union of all sources, deduplicated and normalised.
 4. years_experience: take the most specific value (usually from CV).
 5. interview_score and culture_fit_score: take from interview_transcript extraction only.
 6. Constraints stated ONLY in the interview transcript are valid and should be preserved — they represent real preferences even if not in the CV.
 
-{CANONICAL_KEY_VOCABULARY}"""
+{CONSTRAINT_KEY_GUIDANCE}"""
 
-CANDIDATE_FULL_SYSTEM_PROMPT = f"""You are an expert recruiter extracting structured data from candidate documents.
+CANDIDATE_FULL_SYSTEM_PROMPT = f"""You are an expert at extracting structured requirements and constraints from professional candidate documents.
 
-You will receive all available source documents for one candidate (CV, LinkedIn, interview transcript) combined with clear section headers.
+You will receive all available source documents for one candidate combined with clear section headers.
 
 Rules:
-1. Extract ALL constraints from ALL sections — pay special attention to interview transcripts which often contain salary requirements and location/remote preferences.
+1. Extract ALL constraints from ALL sections — pay special attention to interview transcripts which often contain compensation requirements and location preferences.
 2. Deduplicate: if the same constraint appears in multiple sections, keep the highest-confidence version.
-3. If sections conflict (e.g. different salary figures), prefer interview transcript > CV > LinkedIn.
+3. If sections conflict (e.g. different compensation figures), prefer interview transcript > CV > LinkedIn.
 4. Skills and industries: union of all sections, deduplicated.
 5. years_experience: most specific value, usually from CV.
 6. interview_score and culture_fit_score: infer from the INTERVIEW TRANSCRIPT section only.
 7. CRITICAL: The prompt will include a HINTS section listing figures found by automated text scan. Every figure listed there MUST appear in your constraints output — do not omit them.
 
-{CANONICAL_KEY_VOCABULARY}
+{CONSTRAINT_KEY_GUIDANCE}
 
 {FEW_SHOT_EXAMPLES}"""
 
@@ -544,9 +498,13 @@ def _build_hint_block(
     linkedin_text: str,
     transcript_text: str,
 ) -> str:
-    """Regex-scan all sources and return a hint block to prepend to the LLM prompt."""
+    """Regex-scan all sources and return a hint block to prepend to the LLM prompt.
+
+    Only monetary figures are detected — compensation constraints are universal
+    and high-stakes across all professional domains. The LLM is responsible for
+    extracting other constraint types directly from the text.
+    """
     salary_hints: list[str] = []
-    office_hints: list[str] = []
 
     for label, text in [
         ("CV", cv_text),
@@ -555,18 +513,12 @@ def _build_hint_block(
     ]:
         if text:
             salary_hints.extend(_find_salary_hints(text, label))
-            office_hints.extend(_find_office_hints(text, label))
 
-    lines: list[str] = []
-    if salary_hints:
-        lines.append("SALARY FIGURES DETECTED BY TEXT SCAN — each MUST appear as a salary_min or salary_max constraint:")
-        lines.extend(f"  • {h}" for h in salary_hints)
-    if office_hints:
-        lines.append("OFFICE/REMOTE PREFERENCES DETECTED BY TEXT SCAN — each MUST appear as an office_days_per_week or remote_ok constraint:")
-        lines.extend(f"  • {h}" for h in office_hints)
-
-    if not lines:
+    if not salary_hints:
         return ""
+
+    lines = ["COMPENSATION FIGURES DETECTED BY TEXT SCAN — each MUST appear as a compensation constraint with an appropriate canonical_key:"]
+    lines.extend(f"  • {h}" for h in salary_hints)
     return "\n\nHINTS (from automated text scan — do NOT omit these from constraints):\n" + "\n".join(lines)
 
 
@@ -601,7 +553,6 @@ def parse_job_description(raw_text: str, job_id: str = "", title: str = "", comp
         industries_preferred=result.get("industries_preferred", []),
         industries_acceptable=result.get("industries_acceptable", []),
         constraints=constraints,
-        discipline=result.get("discipline", "other"),
     )
 
 
@@ -689,7 +640,6 @@ def merge_candidate_sources(
         interview_score=float(result.get("interview_score") or 0.5),
         culture_fit_score=float(result.get("culture_fit_score") or 0.5),
         constraints=constraints,
-        discipline=result.get("discipline", "other"),
     )
 
 
@@ -754,5 +704,4 @@ def parse_candidate(raw: dict) -> Candidate:
         interview_score=float(result.get("interview_score") or 0.5),
         culture_fit_score=float(result.get("culture_fit_score") or 0.5),
         constraints=constraints,
-        discipline=result.get("discipline", "other"),
     )

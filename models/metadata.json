@@ -1,0 +1,53 @@
+{
+  "trained_on": "training_data.json",
+  "n_train": 400,
+  "n_test": 100,
+  "feature_names": [
+    "required_skills_overlap",
+    "preferred_skills_overlap",
+    "industry_preferred_match",
+    "experience_delta",
+    "seniority_match",
+    "career_trajectory_score",
+    "interview_score",
+    "culture_fit_score",
+    "management_match",
+    "soft_constraint_score"
+  ],
+  "models": {
+    "logistic": {
+      "file": "logistic_regression.joblib",
+      "profile_name": "logistic",
+      "description": "L2-regularised logistic regression with StandardScaler. Linear decision boundary -- interpretable coefficients. Cannot capture feature interactions or threshold effects.",
+      "hyperparameters": {
+        "C": 1.0,
+        "solver": "lbfgs",
+        "max_iter": 1000
+      },
+      "metrics": {
+        "test_auc": 0.8234,
+        "test_accuracy": 0.75,
+        "cv_auc_mean": 0.8895,
+        "cv_auc_std": 0.0375
+      }
+    },
+    "gbt": {
+      "file": "gradient_boosted.joblib",
+      "profile_name": "gbt",
+      "description": "Gradient-boosted classifier (sklearn). Captures non-linear interactions: skill x seniority synergy, skill threshold cliff, experience-skill substitution, quadratic constraint gate.",
+      "hyperparameters": {
+        "n_estimators": 200,
+        "max_depth": 4,
+        "learning_rate": 0.05,
+        "subsample": 0.8,
+        "min_samples_leaf": 10
+      },
+      "metrics": {
+        "test_auc": 0.8654,
+        "test_accuracy": 0.81,
+        "cv_auc_mean": 0.8833,
+        "cv_auc_std": 0.0235
+      }
+    }
+  }
+}

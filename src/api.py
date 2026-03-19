@@ -29,6 +29,7 @@ from .models import (
     RawJob,
     WEIGHT_PROFILES,
 )
+from .ml_scoring import ML_PROFILES
 from .retrieval import retrieve_top_k
 from .scoring import rank_candidates
 from .store import CandidateStore
@@ -229,14 +230,21 @@ def _run_pipeline(
     if not _candidate_store or len(_candidate_store) == 0:
         raise HTTPException(status_code=503, detail="Candidate store not loaded")
 
-    # Resolve weights: explicit dict > named profile > default
+    # Resolve weights: explicit dict > ML profile > named profile > default
+    ml_profile: str | None = None
     if weights:
         effective_weights = weights
+    elif profile and profile in ML_PROFILES:
+        ml_profile = profile
+        effective_weights = None
     elif profile:
         if profile not in WEIGHT_PROFILES:
             raise HTTPException(
                 status_code=422,
-                detail=f"Unknown profile '{profile}'. Available: {list(WEIGHT_PROFILES)}",
+                detail=(
+                    f"Unknown profile '{profile}'. "
+                    f"Available: {list(WEIGHT_PROFILES) + list(ML_PROFILES)}"
+                ),
             )
         effective_weights = WEIGHT_PROFILES[profile]
     else:
@@ -272,6 +280,7 @@ def _run_pipeline(
         candidates,
         constraint_results,
         weights=effective_weights,
+        ml_profile=ml_profile,
         top_n_explanations=top_n,
     )
 
@@ -457,8 +466,12 @@ async def recommend_stream(request: RecommendRequest) -> StreamingResponse:
     async def generate():
         try:
             # Resolve weights
+            ml_profile: str | None = None
             if request.weights:
                 effective_weights = request.weights
+            elif request.profile and request.profile in ML_PROFILES:
+                ml_profile = request.profile
+                effective_weights = None
             elif request.profile:
                 if request.profile not in WEIGHT_PROFILES:
                     yield _emit({"type": "error", "message": f"Unknown profile '{request.profile}'"})
@@ -489,7 +502,9 @@ async def recommend_stream(request: RecommendRequest) -> StreamingResponse:
             yield _emit({"type": "step", "step": "scoring"})
             pipeline_result = rank_candidates(
                 job, candidates, constraint_results,
-                weights=effective_weights, top_n_explanations=request.top_n,
+                weights=effective_weights,
+                ml_profile=ml_profile,
+                top_n_explanations=request.top_n,
             )
 
             # Build review alerts
@@ -660,8 +675,9 @@ def list_profiles() -> JSONResponse:
     Pass profile= on /recommend to use a preset (e.g. "skills_first").
     Custom weights via the weights= field override all profiles.
     """
-    return JSONResponse(content={
+    linear_profiles = {
         name: {
+            "type": "linear",
             "weights": weights,
             "description": {
                 "balanced": "Equal emphasis across skills, experience, and soft signals",
@@ -671,7 +687,29 @@ def list_profiles() -> JSONResponse:
             }.get(name, ""),
         }
         for name, weights in WEIGHT_PROFILES.items()
-    })
+    }
+    ml_profile_meta = {
+        "logistic": {
+            "type": "ml",
+            "weights": None,
+            "description": (
+                "Logistic regression trained on labeled recruiter decisions. "
+                "Linear decision boundary with learned feature weights. "
+                "Run scripts/train_models.py to (re)train."
+            ),
+        },
+        "gbt": {
+            "type": "ml",
+            "weights": None,
+            "description": (
+                "Gradient-boosted classifier trained on labeled recruiter decisions. "
+                "Captures non-linear feature interactions (skill x seniority synergy, "
+                "skill threshold cliff, experience-skill substitution). "
+                "Run scripts/train_models.py to (re)train."
+            ),
+        },
+    }
+    return JSONResponse(content={**linear_profiles, **ml_profile_meta})
 
 
 # ---------------------------------------------------------------------------

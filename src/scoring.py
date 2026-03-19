@@ -140,7 +140,7 @@ def _industry_similarity(
         max(_cosine(job_emb, can_emb) for can_emb in can_embs)
         for job_emb in job_embs
     ]
-    return float(np.mean(scores))
+    return float(min(1.0, np.mean(scores)))
 
 
 # Seniority ordering for level matching
@@ -293,12 +293,21 @@ def build_feature_vector(
 def score_candidate(
     feature_vector: FeatureVector,
     weights: dict[str, float] | None = None,
+    ml_profile: str | None = None,
 ) -> float:
-    """Return the weighted linear sum score for a candidate (0.0–1.0).
+    """Return a score for a candidate in [0.0, 1.0].
+
+    When ml_profile is set ('logistic' or 'gbt'), delegates to a trained ML
+    model and returns its predicted shortlisting probability.  Otherwise falls
+    back to the weighted linear dot-product (default behaviour).
 
     Weights are expected to already be normalised (via _effective_weights).
     Passing un-normalised weights still works — the score is clamped to [0,1].
     """
+    if ml_profile:
+        from .ml_scoring import score_with_ml
+        return round(score_with_ml(feature_vector, ml_profile), 6)
+
     w = weights if weights is not None else DEFAULT_WEIGHTS
     total = (
         feature_vector.required_skills_overlap * w.get("required_skills_overlap", 0.38)
@@ -323,6 +332,7 @@ def rank_candidates(
     candidates: list[Candidate],
     constraint_results: dict[str, CompatibilityResult],
     weights: dict[str, float] | None = None,
+    ml_profile: str | None = None,
     top_n_explanations: int = 10,
 ) -> PipelineResult:
     """Filter eliminated candidates and rank survivors by score descending.
@@ -360,10 +370,14 @@ def rank_candidates(
             )
         else:
             fv = build_feature_vector(job, candidate, cr)
-            # Compute per-candidate weights: redistributes interview/culture weights
-            # when no transcript exists, then normalises to sum=1.0
-            effective = _effective_weights(candidate, base_weights)
-            score = score_candidate(fv, effective)
+            if ml_profile:
+                # ML models handle missing transcripts implicitly via the feature values
+                score = score_candidate(fv, ml_profile=ml_profile)
+            else:
+                # Compute per-candidate weights: redistributes interview/culture weights
+                # when no transcript exists, then normalises to sum=1.0
+                effective = _effective_weights(candidate, base_weights)
+                score = score_candidate(fv, effective)
             ranked.append(
                 ScoredCandidate(
                     candidate_id=candidate.id,
@@ -382,5 +396,5 @@ def rank_candidates(
         job_id=job.id,
         ranked_candidates=ranked,
         eliminated_candidates=eliminated,
-        weights_used=base_weights,  # show base weights; effective weights vary per candidate
+        weights_used={} if ml_profile else base_weights,
     )
