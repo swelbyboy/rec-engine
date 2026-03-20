@@ -130,51 +130,6 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "soft_constraint_score": 0.08,
 }
 
-# Named weight profiles — surface via GET /profiles; pass as profile= on /recommend.
-# Each profile must sum to 1.0.
-WEIGHT_PROFILES: dict[str, dict[str, float]] = {
-    "balanced": DEFAULT_WEIGHTS,
-    # Skills-first: emphasise technical match over soft signals
-    "skills_first": {
-        "required_skills_overlap": 0.45,   # +0.05 from reduced proxy signals
-        "preferred_skills_overlap": 0.15,
-        "industry_preferred_match": 0.10,
-        "experience_delta": 0.08,
-        "seniority_match": 0.07,
-        "career_trajectory_score": 0.03,
-        "interview_score": 0.03,           # LLM proxy — reduced to limit bias risk
-        "culture_fit_score": 0.03,
-        "management_match": 0.02,
-        "soft_constraint_score": 0.04,
-    },
-    # Constraints-first: surface constraint-compliant candidates (useful for regulated roles)
-    "constraints_first": {
-        "required_skills_overlap": 0.28,   # +0.08 from reduced proxy signals
-        "preferred_skills_overlap": 0.07,
-        "industry_preferred_match": 0.10,
-        "experience_delta": 0.08,
-        "seniority_match": 0.05,
-        "career_trajectory_score": 0.03,
-        "interview_score": 0.03,           # LLM proxy — reduced to limit bias risk
-        "culture_fit_score": 0.02,
-        "management_match": 0.04,
-        "soft_constraint_score": 0.30,
-    },
-    # Culture-fit: intentionally overrides bias-reduction defaults.
-    # Use only when interview transcripts are available and results reviewed by a human.
-    "culture_fit": {
-        "required_skills_overlap": 0.20,
-        "preferred_skills_overlap": 0.08,
-        "industry_preferred_match": 0.12,
-        "experience_delta": 0.08,
-        "seniority_match": 0.05,
-        "career_trajectory_score": 0.07,
-        "interview_score": 0.20,
-        "culture_fit_score": 0.12,
-        "management_match": 0.03,
-        "soft_constraint_score": 0.05,
-    },
-}
 
 
 class ScoredCandidate(BaseModel):

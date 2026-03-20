@@ -4,17 +4,17 @@ AI-powered candidate ranking system. Parses unstructured raw job descriptions an
 
 ## ML / data science concepts
 
-This PoC demonstrateds a real ML pipeline, not a keyword filter or UI wrapper. The core concepts:
+This PoC demonstrateds a real ML pipeline that can be extended, not a keyword filter or UI wrapper. The core concepts:
 
 **Embeddings & cosine similarity.** Every skill, industry, and job description is converted to a ~1536-dimensional vector (via OpenAI `text-embedding-3-small`) that captures _meaning_, not just characters. Two skills are compared by the angle between their vectors — "distributed systems" matches "distributed systems design" even with no string overlap; "Python" does _not_ match "Ruby" despite both being languages. A threshold of 0.75 cosine similarity is the minimum for a skill to count as matched.
 
 **Vector retrieval (semantic search).** Candidate embeddings are pre-computed and cached. On each query, the JD is embedded once, then ranked by cosine similarity against the full candidate matrix in a single numpy operation.
 
-**Feature engineering.** Each candidate is represented as a 10-dimensional feature vector: required/preferred skill overlap, experience delta, seniority match, career trajectory, industry match, interview/culture signals, constraint compliance. These are deliberate design choices — `experience_delta` uses an asymmetric function (below minimum = 0 hard floor; above = linear improvement) that encodes domain knowledge about what matters.
+**Feature engineering.** Each candidate is represented as a 10-dimensional feature vector: required/preferred skill overlap, experience delta, seniority match, career trajectory, industry match, interview/culture signals, constraint compliance. 
 
 **Weighted linear model.** The final score is a weighted sum: `score = 0.38 × required_skills + 0.10 × preferred_skills + ...`. Interpretable by design — every score can be decomposed and explained. Weights for the PoC are hand-tuned, these would be 'learned' after applying historic recruitment training data.
 
-**LLM as a structured extractor.** Claude is used for zero-shot information extraction, not text generation. A JD or CV is passed in; a typed JSON object comes out (skills, constraints, salary, seniority, discipline). This replaces hundreds of regex rules and handles ambiguous phrasing automatically. Quality here gates quality everywhere downstream.
+**LLM as a structured extractor.** Claude is used for information extraction from unstructured data. A JD or CV is passed in; a typed JSON object comes out (skills, constraints, salary, seniority, discipline). This replaces determinisic rules and handles ambiguous phrasing automatically. 
 
 **Retrieval-augmented ranking pipeline.** The overall architecture uses — Retrieve → Filter → Score → Explain. Each stage progressively reduces the candidate set with increasingly expensive operations: vector maths (top-50) → rule-based constraint filtering → linear scoring → LLM explanation (top-10 only). This staged design is what makes it fast enough to be interactive.
 

@@ -27,8 +27,8 @@ from .models import (
     PipelineResult,
     RawCandidate,
     RawJob,
-    WEIGHT_PROFILES,
 )
+from .ml_scoring import ML_PROFILES, clear_model_cache
 from .retrieval import retrieve_top_k
 from .scoring import rank_candidates
 from .store import CandidateStore
@@ -229,16 +229,18 @@ def _run_pipeline(
     if not _candidate_store or len(_candidate_store) == 0:
         raise HTTPException(status_code=503, detail="Candidate store not loaded")
 
-    # Resolve weights: explicit dict > named profile > default
+    # Resolve weights: explicit dict > ML profile > default
+    ml_profile: str | None = None
     if weights:
         effective_weights = weights
+    elif profile and profile in ML_PROFILES:
+        ml_profile = profile
+        effective_weights = None
     elif profile:
-        if profile not in WEIGHT_PROFILES:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Unknown profile '{profile}'. Available: {list(WEIGHT_PROFILES)}",
-            )
-        effective_weights = WEIGHT_PROFILES[profile]
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown profile '{profile}'. Available ML profiles: {list(ML_PROFILES)}",
+        )
     else:
         effective_weights = None  # rank_candidates will use DEFAULT_WEIGHTS
 
@@ -272,6 +274,7 @@ def _run_pipeline(
         candidates,
         constraint_results,
         weights=effective_weights,
+        ml_profile=ml_profile,
         top_n_explanations=top_n,
     )
 
@@ -363,7 +366,7 @@ def _run_pipeline(
         "eliminated_candidates": elimination_output,
         "review_alerts": review_alerts,
         "weights_used": pipeline_result.weights_used,
-        "profile_used": profile or ("custom" if weights else "balanced"),
+        "profile_used": profile or ("custom" if weights else "default"),
         "job_details": {
             "company": job.company,
             "seniority": job.seniority,
@@ -457,13 +460,15 @@ async def recommend_stream(request: RecommendRequest) -> StreamingResponse:
     async def generate():
         try:
             # Resolve weights
+            ml_profile: str | None = None
             if request.weights:
                 effective_weights = request.weights
+            elif request.profile and request.profile in ML_PROFILES:
+                ml_profile = request.profile
+                effective_weights = None
             elif request.profile:
-                if request.profile not in WEIGHT_PROFILES:
-                    yield _emit({"type": "error", "message": f"Unknown profile '{request.profile}'"})
-                    return
-                effective_weights = WEIGHT_PROFILES[request.profile]
+                yield _emit({"type": "error", "message": f"Unknown profile '{request.profile}'. Available ML profiles: {list(ML_PROFILES)}"})
+                return
             else:
                 effective_weights = None
 
@@ -489,7 +494,9 @@ async def recommend_stream(request: RecommendRequest) -> StreamingResponse:
             yield _emit({"type": "step", "step": "scoring"})
             pipeline_result = rank_candidates(
                 job, candidates, constraint_results,
-                weights=effective_weights, top_n_explanations=request.top_n,
+                weights=effective_weights,
+                ml_profile=ml_profile,
+                top_n_explanations=request.top_n,
             )
 
             # Build review alerts
@@ -550,6 +557,7 @@ async def recommend_stream(request: RecommendRequest) -> StreamingResponse:
             # Emit full ranked structure (no explanations yet) — UI shows cards immediately
             yield _emit({
                 "type": "meta",
+                "job_id": pipeline_result.job_id,
                 "job_title": job.title,
                 "job_details": _job_details_dict(job),
                 "ranked_candidates": [_ranked_entry(i, sc) for i, sc in enumerate(pipeline_result.ranked_candidates)],
@@ -561,7 +569,7 @@ async def recommend_stream(request: RecommendRequest) -> StreamingResponse:
                 "review_alerts": review_alerts,
                 "retrieved_candidates": len(candidates),
                 "weights_used": pipeline_result.weights_used,
-                "profile_used": request.profile or ("custom" if request.weights else "balanced"),
+                "profile_used": request.profile or ("custom" if request.weights else "default"),
             })
 
             # 5. Generate explanations in parallel, emit as each completes
@@ -655,22 +663,27 @@ async def recommend_upload(
 # ---------------------------------------------------------------------------
 @router.get("/profiles")
 def list_profiles() -> JSONResponse:
-    """Return all named weight profiles with their feature weights.
+    """Return available ML scoring profiles.
 
-    Pass profile= on /recommend to use a preset (e.g. "skills_first").
-    Custom weights via the weights= field override all profiles.
+    Pass profile= on /recommend to use an ML model (e.g. "logistic" or "gbt").
+    Custom weights via the weights= field bypass profiles entirely.
     """
     return JSONResponse(content={
-        name: {
-            "weights": weights,
-            "description": {
-                "balanced": "Equal emphasis across skills, experience, and soft signals",
-                "skills_first": "Prioritises required and preferred technical skill match",
-                "constraints_first": "Heavy weight on constraint compliance — useful for regulated/cleared roles",
-                "culture_fit": "Weights interview performance and culture fit over technical match",
-            }.get(name, ""),
-        }
-        for name, weights in WEIGHT_PROFILES.items()
+        "logistic": {
+            "type": "ml",
+            "description": (
+                "Logistic regression trained on labeled recruiter decisions. "
+                "Linear decision boundary with learned feature weights."
+            ),
+        },
+        "gbt": {
+            "type": "ml",
+            "description": (
+                "Gradient-boosted classifier trained on labeled recruiter decisions. "
+                "Captures non-linear feature interactions (skill x seniority synergy, "
+                "skill threshold cliff, experience-skill substitution)."
+            ),
+        },
     })
 
 
@@ -745,6 +758,369 @@ def evaluate(job_id: str, profile: str | None = None) -> JSONResponse:
         },
         "metrics": metrics,
         "review_alerts": result.get("review_alerts", []),
+    })
+
+
+# ---------------------------------------------------------------------------
+# GET /model/metrics — AUC, Brier score, log loss for both models on held-out test set
+# ---------------------------------------------------------------------------
+def _compute_metrics() -> dict:
+    """Load training data + both models, reproduce the 80/20 split, return error metrics."""
+    from .ml_scoring import FEATURE_ORDER, _MODELS_DIR
+
+    try:
+        import joblib
+        import numpy as np
+        from sklearn.metrics import brier_score_loss, log_loss as sklearn_log_loss, roc_auc_score
+        from sklearn.model_selection import train_test_split
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail=f"scikit-learn not installed: {exc}")
+
+    td_path = DATA_DIR / "training_data.json"
+    if not td_path.exists():
+        raise HTTPException(status_code=404, detail="training_data.json not found")
+
+    with open(td_path) as f:
+        td = json.load(f)
+    records = td.get("records", [])
+    if len(records) < 10:
+        raise HTTPException(status_code=422, detail="Not enough records to evaluate")
+
+    X = np.array([r["features"] for r in records], dtype=np.float64)
+    y = np.array([r["outcome"] for r in records], dtype=np.int32)
+    _, X_test, _, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    result: dict = {"n_test": len(y_test), "feature_names": FEATURE_ORDER}
+    for profile, filename in [("logistic", "logistic_regression.joblib"), ("gbt", "gradient_boosted.joblib")]:
+        path = _MODELS_DIR / filename
+        if not path.exists():
+            continue
+        model = joblib.load(path)
+        proba = model.predict_proba(X_test)[:, 1]
+        result[profile] = {
+            "auc": float(roc_auc_score(y_test, proba)),
+            "brier_score": float(brier_score_loss(y_test, proba)),
+            "log_loss": float(sklearn_log_loss(y_test, proba)),
+        }
+
+    return result
+
+
+@router.get("/model/metrics")
+def model_metrics() -> JSONResponse:
+    """Compute AUC, Brier score, and log loss for both models on the held-out test split."""
+    try:
+        result = _compute_metrics()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return JSONResponse(content=result)
+
+
+# ---------------------------------------------------------------------------
+# GET /model/weights — logistic coefficients + GBT feature importances
+# ---------------------------------------------------------------------------
+@router.get("/model/weights")
+def model_weights() -> JSONResponse:
+    """Return feature weights for trained models.
+
+    Logistic: scaled coefficients (positive = boosts shortlisting probability).
+    GBT: feature importances (sum to 1, always positive).
+    """
+    from .ml_scoring import FEATURE_ORDER, _MODELS_DIR
+
+    try:
+        import joblib
+    except ImportError:
+        raise HTTPException(status_code=500, detail="joblib not installed")
+
+    result: dict = {"feature_names": FEATURE_ORDER}
+
+    def _extract(path, profile):
+        if not path.exists():
+            return None
+        model = joblib.load(path)
+        if profile == "logistic":
+            # Stored as Pipeline(scaler, clf)
+            clf = model.named_steps["clf"]
+            return {"weights": clf.coef_[0].tolist(), "type": "coefficients"}
+        else:
+            # May be bare classifier (old) or Pipeline (retrained)
+            clf = model.named_steps["clf"] if hasattr(model, "named_steps") else model
+            return {"weights": clf.feature_importances_.tolist(), "type": "importances"}
+
+    for profile, filename in [("logistic", "logistic_regression.joblib"), ("gbt", "gradient_boosted.joblib")]:
+        extracted = _extract(_MODELS_DIR / filename, profile)
+        if extracted:
+            result[profile] = extracted
+
+    return JSONResponse(content=result)
+
+
+# ---------------------------------------------------------------------------
+# POST /feedback — append recruiter decisions to feedback.jsonl
+# ---------------------------------------------------------------------------
+class _FeedbackRecord(BaseModel):
+    candidate_id: str
+    job_id: str
+    features: list[float]
+    outcome: int  # 0 or 1
+    source: str = "recruiter"
+
+
+class _FeedbackRequest(BaseModel):
+    records: list[_FeedbackRecord]
+
+
+@router.post("/feedback")
+def submit_feedback(request: _FeedbackRequest) -> JSONResponse:
+    feedback_path = DATA_DIR / "feedback.jsonl"
+    feedback_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(feedback_path, "a") as f:
+        for rec in request.records:
+            f.write(json.dumps(rec.model_dump()) + "\n")
+    total = sum(1 for _ in open(feedback_path)) if feedback_path.exists() else 0
+    return JSONResponse(content={"saved": len(request.records), "total_feedback": total})
+
+
+# ---------------------------------------------------------------------------
+# POST /training-data/upload — merge CSV or JSON into training_data.json
+# ---------------------------------------------------------------------------
+@router.post("/training-data/upload")
+async def upload_training_data(file: UploadFile = File(...)) -> JSONResponse:
+    from .ml_scoring import FEATURE_ORDER
+
+    content = await file.read()
+    filename = (file.filename or "").lower()
+
+    new_records: list[dict] = []
+    if filename.endswith(".csv"):
+        import csv, io
+        reader = csv.DictReader(io.StringIO(content.decode("utf-8")))
+        for row in reader:
+            try:
+                features = [float(row[k]) for k in FEATURE_ORDER]
+                outcome = int(float(row["outcome"]))
+                new_records.append({"features": features, "outcome": outcome})
+            except (KeyError, ValueError):
+                continue
+    else:
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid JSON: {exc}")
+        raw = data.get("records", data) if isinstance(data, dict) else data
+        for r in raw:
+            try:
+                new_records.append({
+                    "features": [float(v) for v in r["features"]],
+                    "outcome": int(r["outcome"]),
+                })
+            except (KeyError, ValueError, TypeError):
+                continue
+
+    if not new_records:
+        raise HTTPException(status_code=422, detail="No valid records found in uploaded file")
+
+    td_path = DATA_DIR / "training_data.json"
+    if td_path.exists():
+        with open(td_path) as f:
+            td = json.load(f)
+    else:
+        td = {"version": 1, "feature_names": FEATURE_ORDER, "records": []}
+
+    existing = td.get("records", [])
+    next_id = len(existing) + 1
+    for rec in new_records:
+        existing.append({"id": f"upload-{next_id:04d}", **rec})
+        next_id += 1
+    td["records"] = existing
+    td["n_records"] = len(existing)
+
+    with open(td_path, "w") as f:
+        json.dump(td, f, indent=2)
+
+    return JSONResponse(content={"records_added": len(new_records), "total_records": len(existing)})
+
+
+# ---------------------------------------------------------------------------
+# POST /retrain — retrain logistic + GBT models in-process
+# ---------------------------------------------------------------------------
+_REGRESSION_TOLERANCE = 0.01  # max allowable AUC drop before gate blocks save
+
+
+def _do_retrain(force: bool = False) -> dict:
+    """Synchronous retraining — runs in FastAPI threadpool via run_in_executor."""
+    import datetime
+    from .ml_scoring import FEATURE_ORDER, _MODELS_DIR
+
+    # Load training_data.json
+    td_path = DATA_DIR / "training_data.json"
+    records: list[dict] = []
+    if td_path.exists():
+        with open(td_path) as f:
+            td = json.load(f)
+        records.extend(td.get("records", []))
+
+    # Load feedback.jsonl
+    feedback_path = DATA_DIR / "feedback.jsonl"
+    if feedback_path.exists():
+        with open(feedback_path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        rec = json.loads(line)
+                        records.append({"features": rec["features"], "outcome": rec["outcome"]})
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+
+    if len(records) < 10:
+        raise HTTPException(status_code=422, detail=f"Need at least 10 records to retrain, got {len(records)}")
+
+    try:
+        import numpy as np
+        from sklearn.ensemble import GradientBoostingClassifier
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.metrics import roc_auc_score
+        from sklearn.model_selection import cross_val_score, train_test_split
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+        import joblib
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail=f"scikit-learn not installed: {exc}")
+
+    X = np.array([r["features"] for r in records], dtype=np.float64)
+    y = np.array([r["outcome"] for r in records], dtype=np.int32)
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    # Logistic
+    log_pipe = Pipeline([
+        ("scaler", StandardScaler()),
+        ("clf", LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000)),
+    ])
+    from sklearn.metrics import brier_score_loss, log_loss as sklearn_log_loss
+
+    log_pipe.fit(X_train, y_train)
+    log_proba = log_pipe.predict_proba(X_test)[:, 1]
+    log_auc = float(roc_auc_score(y_test, log_proba))
+    log_brier = float(brier_score_loss(y_test, log_proba))
+    log_logloss = float(sklearn_log_loss(y_test, log_proba))
+    log_cv = cross_val_score(log_pipe, X, y, cv=5, scoring="roc_auc")
+
+    # GBT
+    gbt_pipe = Pipeline([
+        ("scaler", StandardScaler()),
+        ("clf", GradientBoostingClassifier(n_estimators=200, max_depth=4, learning_rate=0.05,
+                                            subsample=0.8, min_samples_leaf=10, random_state=42)),
+    ])
+    gbt_pipe.fit(X_train, y_train)
+    gbt_proba = gbt_pipe.predict_proba(X_test)[:, 1]
+    gbt_auc = float(roc_auc_score(y_test, gbt_proba))
+    gbt_brier = float(brier_score_loss(y_test, gbt_proba))
+    gbt_logloss = float(sklearn_log_loss(y_test, gbt_proba))
+    gbt_cv = cross_val_score(gbt_pipe, X, y, cv=5, scoring="roc_auc")
+
+    # Regression gate — block save if both models regress beyond tolerance (unless forced)
+    meta_path = _MODELS_DIR / "metadata.json"
+    if not force and meta_path.exists():
+        try:
+            with open(meta_path) as f:
+                old_meta = json.load(f)
+            old_log_auc = old_meta.get("models", {}).get("logistic", {}).get("auc")
+            old_gbt_auc = old_meta.get("models", {}).get("gbt", {}).get("auc")
+            if old_log_auc is not None and old_gbt_auc is not None:
+                log_regressed = log_auc < old_log_auc - _REGRESSION_TOLERANCE
+                gbt_regressed = gbt_auc < old_gbt_auc - _REGRESSION_TOLERANCE
+                if log_regressed and gbt_regressed:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "message": "Retraining would regress both models. Use force=true to override.",
+                            "regression": {
+                                "logistic": {"old_auc": old_log_auc, "new_auc": log_auc},
+                                "gbt": {"old_auc": old_gbt_auc, "new_auc": gbt_auc},
+                            },
+                        },
+                    )
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # Unreadable old metadata — skip gate
+
+    # Save
+    _MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    joblib.dump(log_pipe, _MODELS_DIR / "logistic_regression.joblib")
+    joblib.dump(gbt_pipe, _MODELS_DIR / "gradient_boosted.joblib")
+
+    trained_at = datetime.datetime.utcnow().isoformat() + "Z"
+    meta = {
+        "trained_at": trained_at,
+        "total_records": len(records),
+        "feature_names": FEATURE_ORDER,
+        "models": {
+            "logistic": {
+                "auc": log_auc, "cv_auc": float(log_cv.mean()), "cv_auc_std": float(log_cv.std()),
+                "brier_score": log_brier, "log_loss": log_logloss,
+            },
+            "gbt": {
+                "auc": gbt_auc, "cv_auc": float(gbt_cv.mean()), "cv_auc_std": float(gbt_cv.std()),
+                "brier_score": gbt_brier, "log_loss": gbt_logloss,
+            },
+        },
+    }
+    with open(_MODELS_DIR / "metadata.json", "w") as f:
+        json.dump(meta, f, indent=2)
+
+    clear_model_cache()
+    return meta
+
+
+@router.post("/retrain")
+async def retrain_models(force: bool = False) -> JSONResponse:
+    try:
+        result = await asyncio.to_thread(lambda: _do_retrain(force=force))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Retraining failed: {exc}")
+    return JSONResponse(content={
+        "logistic": result["models"]["logistic"],
+        "gbt": result["models"]["gbt"],
+        "total_records": result["total_records"],
+        "trained_at": result["trained_at"],
+    })
+
+
+# ---------------------------------------------------------------------------
+# GET /model/status — metadata.json + feedback + training data counts
+# ---------------------------------------------------------------------------
+@router.get("/model/status")
+def model_status() -> JSONResponse:
+    meta_path = Path(__file__).parent.parent / "models" / "metadata.json"
+    meta: dict = {}
+    if meta_path.exists():
+        with open(meta_path) as f:
+            meta = json.load(f)
+
+    feedback_count = 0
+    feedback_path = DATA_DIR / "feedback.jsonl"
+    if feedback_path.exists():
+        feedback_count = sum(1 for line in open(feedback_path) if line.strip())
+
+    training_data_count = 0
+    td_path = DATA_DIR / "training_data.json"
+    if td_path.exists():
+        with open(td_path) as f:
+            td = json.load(f)
+        training_data_count = len(td.get("records", []))
+
+    return JSONResponse(content={
+        **meta,
+        "feedback_count": feedback_count,
+        "training_data_count": training_data_count,
     })
 
 
