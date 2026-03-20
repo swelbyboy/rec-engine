@@ -15,6 +15,7 @@ COPY src/ ./src/
 RUN pip install --no-cache-dir .
 
 COPY data/ ./data/
+COPY models/ ./models/
 COPY --from=ui-builder /app/ui/dist ./ui/dist
 
 EXPOSE 8000
