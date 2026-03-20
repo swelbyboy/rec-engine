@@ -143,8 +143,8 @@ None of these are learned from data. Different roles, industries, or hiring cult
 ### Static canonical key vocabulary
 The ~15 canonical keys are hardcoded in `extraction.py`. Adding a new constraint type (e.g. `publication_count_min` for academic roles, `on_call_hours_per_week` for operational roles) requires both updating the prompt vocabulary and adding any special-case handling in the constraint engine. Novel constraints degrade gracefully to semantic matching, but lose numeric comparison precision and deterministic hard-fail behaviour.
 
-### No feedback loop
-Recruiter decisions — which candidates were shortlisted, interviewed, rejected, hired — never feed back into the system. `ground_truth.json` exists for offline evaluation but doesn't update weights or thresholds. The scoring model cannot improve without a mechanism to capture and learn from outcomes.
+### Feedback loop (partially addressed)
+A basic feedback loop now exists: recruiter curation decisions (shortlist / remove) are captured as labelled feature-vector pairs and written to `data/feedback.jsonl`, and models can be retrained in-process via `POST /api/retrain`. However, the signal is coarse (binary outcome only, no reason for rejection), `job_id` is not stored (no per-role or per-recruiter stratification), and there is no guard against overfitting when the feedback set is small. The loop closes, but the data quality is limited until volume accumulates.
 
 ### Candidate-side hard constraints don't independently eliminate
 The constraint engine iterates over employer constraints and checks them against candidate constraints. A candidate with a hard salary requirement (`salary_min: £150k`) is only eliminated if the employer also has a matching salary constraint (`salary_max`) that conflicts. If the employer specifies no salary budget, the candidate passes through — their requirement is surfaced in `candidate_requirements` but doesn't affect ranking. In practice, a human recruiter would catch this; the system cannot act on it without employer-side data.
@@ -523,13 +523,13 @@ The primary blocker to white-labelling is the hardcoded canonical key vocabulary
 
 ### Phase 3 — Recruiter feedback capture
 
+**Status:** Implemented (basic).
+
 **Goal:** Capture recruiter decisions to create a labelled dataset for learning.
 
-- Add a lightweight feedback API: thumbs up/down on ranked candidates, shortlist/reject outcomes per job.
-- Log the full feature vector for each decision: `(job_id, candidate_id, feature_vector[10], decision)`.
-- Store in an append-only outcomes table — even a CSV or SQLite at this scale.
+The recruiter curation workflow (Phase 3 UI) surfaces shortlist decisions as implicit labels. On "Send to Hirer", kept candidates get `outcome=1` and removed candidates get `outcome=0`; both are written as NDJSON records to `data/feedback.jsonl` via `POST /api/feedback`. Each record stores `{candidate_id, job_id, features[10], outcome, source}`.
 
-This phase has no model changes. It creates the training data that all subsequent phases depend on. Without this, weight learning is impossible.
+Remaining gaps: `job_id` is currently empty (the streaming meta event doesn't include it), so feedback cannot be stratified by role type. Manually-added candidates are excluded from feedback because their feature vectors were not produced by the pipeline. The signal is binary (shortlist/remove) only — no reason codes.
 
 **Key metric:** Number of labelled (feature_vector, outcome) pairs accumulated.
 
@@ -537,14 +537,15 @@ This phase has no model changes. It creates the training data that all subsequen
 
 ### Phase 4 — Learned feature weights
 
+**Status:** Implemented (in-process retraining; synthetic training data only so far).
+
 **Goal:** Replace hand-tuned weights with weights learned from recruiter outcomes.
 
-Once enough labelled pairs exist (rough lower bound: ~200 per weight profile), fit a supervised model over the 10-dimensional feature vectors:
+`POST /api/retrain` loads `data/training_data.json` and `data/feedback.jsonl`, merges them, and trains both models in a FastAPI threadpool (sync, ~1–2s). Models are saved to `models/` and the in-process cache is invalidated via `clear_model_cache()` so the next pipeline call uses the updated weights. `POST /api/training-data/upload` accepts `.csv` or `.json` to augment the training set without retraining.
 
-- **Logistic regression** on binary outcomes (shortlisted=1, rejected=0): outputs a learned weight vector directly comparable to the current hand-tuned weights. The current weights are a warm-start prior.
-- **Gradient-boosted trees** (XGBoost/LightGBM) if non-linear feature interactions matter — e.g. if high skill overlap only matters when seniority also matches.
+The current training data (500 synthetic records) was generated with deliberate non-linear structure so GBT outperforms logistic regression on the test set (AUC 0.865 vs 0.823, Brier score 0.062 vs 0.140). On real recruiter feedback the relative advantage may differ.
 
-The existing `weight_profile` parameter (`balanced`, `skills_first`, etc.) becomes a model selector rather than a hardcoded dict. Different profiles can be learned from different recruiter cohorts or role types.
+Remaining gaps: no minimum-record guard before retraining is exposed (current floor is 10, which is insufficient for a reliable model); no model versioning or rollback; no A/B evaluation comparing retrained vs baseline NDCG@5 on held-out jobs before the new model goes live.
 
 **Key metric:** NDCG@5 on held-out jobs vs current hand-tuned baseline.
 
@@ -609,3 +610,78 @@ The pipeline is symmetric: both JD and candidate are represented as natural-lang
 - A "candidate dashboard" API and UI surface.
 
 This is primarily an infrastructure addition, not a modelling change.
+
+---
+
+## 11. Implemented Extensions
+
+This section documents features added after the Phase 1 baseline, covering recruiter workflow, hirer view, feedback capture, in-process retraining, and model observability.
+
+---
+
+### 11.1 Recruiter curation workflow
+
+The results panel now functions as an editable shortlist rather than a read-only ranked list.
+
+**Shortlist initialisation:** on receipt of the `meta` SSE event, the ranked candidates are copied into a `shortlist` state object (`ShortlistEntry[]`). Each entry wraps the `RankedCandidate` with `note: string`, `removed: boolean`, and `manuallyAdded: boolean`. The original `result` state is preserved for feature/constraint detail views; the shortlist drives what the recruiter sees.
+
+**Editing controls (per card):**
+- Up/down arrows reorder within the active (non-removed) shortlist.
+- × removes a candidate in-place; the card stays visible at muted opacity with strikethrough name and an "Undo" link. This preserves rank context — the recruiter can see who was removed and where they sat.
+- Note textarea (in expanded card body) adds a recruiter annotation passed through to the hirer view.
+
+**Add from pipeline:** a collapsible panel at the bottom of the list shows all pipeline candidates (ranked + eliminated) not currently active in the shortlist, searchable by name. "Add" inserts them with `manuallyAdded: true`; these are excluded from feedback submission because their feature vectors were not produced by the standard pipeline path.
+
+---
+
+### 11.2 Hirer view
+
+A separate "Hirer" tab shows a clean card grid containing only what a hirer needs to see. No feature breakdown, constraint table, pipeline step data, or model internals are exposed.
+
+**Card contents:** name, seniority badge, top-5 skill pills, match score % with colour bar, recruiter note (highlighted if present).
+
+**State transition:** "Send to Hirer" (button in the results panel header) builds the `HirerCandidate[]` array from kept shortlist entries, enriched with `seniority_level` and `skills` from the `candidatePool` map (fetched once on app mount via `GET /api/candidates`), then sets `tab = "hirer"`. The hirer view shows an empty state until this action fires.
+
+---
+
+### 11.3 Feedback API
+
+`POST /api/feedback` accepts `{records: [{candidate_id, job_id, features: float[10], outcome: 0|1, source}]}` and appends each record as a NDJSON line to `data/feedback.jsonl`. Returns `{saved, total_feedback}`.
+
+**Implicit labelling via "Send to Hirer":** the send action constructs feedback records automatically from non-manually-added shortlist entries — kept entries get `outcome=1`, removed entries get `outcome=0`. The submission is fire-and-forget (non-blocking). The recruiter's curation act is the labelling act; no separate annotation UI is needed.
+
+**Known limitation:** `job_id` is currently `""` in all feedback records because the streaming `meta` event doesn't include it. This prevents per-role stratification of the training data. Fixing it requires either propagating `job_id` through the streaming pipeline or deriving it client-side from the job title.
+
+---
+
+### 11.4 Training data upload and in-process retraining
+
+**Upload:** `POST /api/training-data/upload` accepts a multipart file in two formats:
+- CSV with columns matching `FEATURE_ORDER` (10 features) plus `outcome`
+- JSON with `{records: [{features: float[10], outcome: 0|1}]}` or a bare array
+
+Records are appended to `data/training_data.json` with auto-incrementing IDs. Returns `{records_added, total_records}`.
+
+**Retrain:** `POST /api/retrain` merges `training_data.json` and `feedback.jsonl`, performs an 80/20 train/test split (random_state=42 for reproducibility), and trains:
+- `Pipeline(StandardScaler, LogisticRegression(C=1.0, lbfgs))` — interpretable, linear
+- `Pipeline(StandardScaler, GradientBoostingClassifier(n_estimators=200, max_depth=4, lr=0.05))` — non-linear, captures feature interactions
+
+Both models are evaluated for AUC-ROC, Brier score (MSE of predicted probabilities), and log loss on the held-out test split. Results are written to `models/metadata.json` alongside `trained_at`. New joblib files overwrite the previous models. `clear_model_cache()` invalidates the in-process model cache so the next pipeline call loads the updated weights.
+
+The retrain runs synchronously in a FastAPI threadpool (~1–2s). Minimum record guard is 10 (insufficient for a reliable model in production; a practical minimum is ~200 per class).
+
+**Model status and metrics:** `GET /api/model/status` returns `metadata.json` contents plus `feedback_count` and `training_data_count` (live counts from disk). `GET /api/model/metrics` loads both models and recomputes AUC, Brier score, and log loss against the same 80/20 split — useful when metrics are not in metadata (e.g. models trained by the original `scripts/train_models.py` which predates these fields).
+
+---
+
+### 11.5 Model observability ("How it works" tab)
+
+A fourth tab provides a technical overview of the system for stakeholders and for debugging.
+
+**Pipeline diagram:** five cards (Parse → Retrieve → Constrain → Score → Explain) with a one-sentence description of each stage's operation and cost profile.
+
+**Model comparison table:** fetched from `GET /api/model/metrics`. Shows AUC-ROC, Brier score, and log loss for both models on the held-out test set, with the winning model highlighted per metric and a footnote explaining why GBT outperforms logistic on the current training data.
+
+**Feature weight visualisation:** fetched from `GET /api/model/weights`. Both models are shown side-by-side with rows in the same order (sorted by GBT importance descending, applied to both cards so rows align). Logistic regression shows centre-anchored bidirectional bars (green = increases shortlisting probability, pink = reduces it) with raw coefficient values. GBT shows left-anchored bars with importance percentages.
+
+**Model Training panel:** collapsible panel in the recruiter tab left column, visible after a pipeline run completes. Shows training/feedback record counts, last trained date, AUC/CV-AUC metrics table, file upload control, and retrain button with spinner. After retraining, shows a before/after AUC comparison with delta (e.g. `82.3% → 84.1% (+0.018)`) and a "Models reloaded" notice.

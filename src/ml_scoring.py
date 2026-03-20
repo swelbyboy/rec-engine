@@ -67,6 +67,11 @@ def fv_to_array(fv: "FeatureVector") -> np.ndarray:
     return np.array([[getattr(fv, name) for name in FEATURE_ORDER]], dtype=np.float64)
 
 
+def clear_model_cache() -> None:
+    """Invalidate the in-process model cache so next call reloads from disk."""
+    _model_cache.clear()
+
+
 def score_with_ml(fv: "FeatureVector", profile: str) -> float:
     """Return the shortlisting probability predicted by a trained ML model.
 

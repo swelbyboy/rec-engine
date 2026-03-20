@@ -1,19 +1,36 @@
 import { useState } from "react";
-import { Users, ChevronDown, ChevronUp, Search, AlertCircle } from "lucide-react";
+import { Users, ChevronDown, ChevronUp, Search, AlertCircle, Send, Plus } from "lucide-react";
 
-// If the best candidate's required-skills overlap is below this, the pool
-// has no one with the right skills for the role (e.g. sales vs tech pool).
 const SKILLS_OVERLAP_THRESHOLD = 0.15;
-import type { RecommendResult } from "../types";
+import type { CandidateRow, RankedCandidate, RecommendResult, ShortlistEntry } from "../types";
 import CandidateCard from "./CandidateCard";
 
 interface Props {
   result: RecommendResult | null;
   isLoading: boolean;
+  shortlist: { entries: ShortlistEntry[] } | null;
+  onReorder: (fromIdx: number, toIdx: number) => void;
+  onRemove: (candidateId: string, removed: boolean) => void;
+  onNoteChange: (candidateId: string, note: string) => void;
+  onAddCandidate: (candidate: RankedCandidate) => void;
+  onSendToHirer: () => void;
+  candidatePool: Map<string, CandidateRow>;
 }
 
-export default function ResultsPanel({ result, isLoading }: Props) {
+export default function ResultsPanel({
+  result,
+  isLoading,
+  shortlist,
+  onReorder,
+  onRemove,
+  onNoteChange,
+  onAddCandidate,
+  onSendToHirer,
+  candidatePool: _candidatePool,
+}: Props) {
   const [eliminatedOpen, setEliminatedOpen] = useState(false);
+  const [addPoolOpen, setAddPoolOpen] = useState(false);
+  const [poolSearch, setPoolSearch] = useState("");
 
   if (isLoading) {
     return (
@@ -71,6 +88,33 @@ export default function ResultsPanel({ result, isLoading }: Props) {
     );
   }
 
+  // Use shortlist entries if available, else fall back to ranked_candidates
+  const entries: ShortlistEntry[] | null = shortlist?.entries ?? null;
+  const activeCount = entries ? entries.filter((e) => !e.removed).length : ranked_candidates.length;
+
+  // Compute per-entry active rank (for up/down button bounds)
+  let activeRank = 0;
+  const entryRanks: number[] = entries
+    ? entries.map((e) => {
+        if (!e.removed) { activeRank++; return activeRank; }
+        return 0;
+      })
+    : [];
+
+  // All shortlist candidate IDs (including removed) so we don't double-add
+  const allShortlistIds = new Set(entries?.map((e) => e.candidate.candidate_id) ?? []);
+  // Pool candidates not currently active in shortlist (for add-from-pool)
+  const activeIds = new Set(entries?.filter((e) => !e.removed).map((e) => e.candidate.candidate_id) ?? []);
+  // Combine ranked + eliminated as pool candidates
+  const allPipelineCandidates: RankedCandidate[] = [
+    ...ranked_candidates,
+    // Build pseudo-RankedCandidate from eliminated (no feature_vector, so we skip them)
+  ];
+  const poolCandidates = allPipelineCandidates.filter((c) => !activeIds.has(c.candidate_id));
+  const filteredPool = poolSearch.trim()
+    ? poolCandidates.filter((c) => c.name.toLowerCase().includes(poolSearch.toLowerCase()))
+    : poolCandidates;
+
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Header */}
@@ -80,7 +124,7 @@ export default function ResultsPanel({ result, isLoading }: Props) {
       >
         <Users className="h-3.5 w-3.5" style={{ color: "rgba(255,255,255,0.35)" }} />
         <span className="text-xs font-medium text-white">
-          {ranked_candidates.length} ranked
+          {activeCount} ranked
         </span>
         {eliminated_candidates.length > 0 && (
           <span className="text-xs" style={{ color: "rgba(255,255,255,0.35)" }}>
@@ -91,6 +135,19 @@ export default function ResultsPanel({ result, isLoading }: Props) {
           <span className="ml-auto text-xs italic truncate" style={{ color: "rgba(255,255,255,0.25)" }}>
             {job_title}
           </span>
+        )}
+        {/* Send to Hirer */}
+        {entries && (
+          <button
+            onClick={onSendToHirer}
+            className="ml-2 flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors shrink-0"
+            style={{ background: "rgba(213,250,84,0.1)", color: "#d5fa54", border: "1px solid rgba(213,250,84,0.2)" }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(213,250,84,0.18)")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(213,250,84,0.1)")}
+          >
+            <Send className="h-3 w-3" />
+            Send to Hirer
+          </button>
         )}
       </div>
 
@@ -110,9 +167,101 @@ export default function ResultsPanel({ result, isLoading }: Props) {
             </div>
           </div>
         )}
-        {ranked_candidates.map((c) => (
-          <CandidateCard key={c.candidate_id} candidate={c} />
-        ))}
+
+        {/* Render shortlist entries if available */}
+        {entries
+          ? entries.map((entry, idx) => {
+              const ar = entryRanks[idx];
+              return (
+                <CandidateCard
+                  key={entry.candidate.candidate_id}
+                  candidate={entry.candidate}
+                  augment={{
+                    rank: ar,
+                    totalActive: activeCount,
+                    removed: entry.removed,
+                    note: entry.note,
+                    isOverride: entry.manuallyAdded,
+                    onMoveUp: () => {
+                      if (idx > 0) onReorder(idx, idx - 1);
+                    },
+                    onMoveDown: () => {
+                      if (idx < entries.length - 1) onReorder(idx, idx + 1);
+                    },
+                    onRemove: () => onRemove(entry.candidate.candidate_id, true),
+                    onUndo: () => onRemove(entry.candidate.candidate_id, false),
+                    onNoteChange: (note) => onNoteChange(entry.candidate.candidate_id, note),
+                  }}
+                />
+              );
+            })
+          : ranked_candidates.map((c) => (
+              <CandidateCard key={c.candidate_id} candidate={c} />
+            ))}
+
+        {/* Add from pool */}
+        {entries && poolCandidates.length > 0 && (
+          <div className="pt-1">
+            <button
+              onClick={() => setAddPoolOpen((v) => !v)}
+              className="flex w-full items-center justify-between rounded-lg px-4 py-2.5 text-xs font-medium transition-colors"
+              style={{
+                background: "rgba(255,255,255,0.03)",
+                color: "rgba(255,255,255,0.35)",
+                border: "1px solid rgba(255,255,255,0.06)",
+              }}
+            >
+              <span className="flex items-center gap-1.5">
+                <Plus className="h-3.5 w-3.5" />
+                Add from pipeline ({poolCandidates.length})
+              </span>
+              {addPoolOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            </button>
+
+            {addPoolOpen && (
+              <div className="mt-2 space-y-1.5">
+                <input
+                  type="text"
+                  value={poolSearch}
+                  onChange={(e) => setPoolSearch(e.target.value)}
+                  placeholder="Search by name..."
+                  className="w-full rounded-lg px-3 py-1.5 text-xs outline-none"
+                  style={{
+                    background: "rgba(255,255,255,0.05)",
+                    border: "1px solid rgba(255,255,255,0.08)",
+                    color: "rgba(255,255,255,0.7)",
+                  }}
+                />
+                {filteredPool.map((c) => (
+                  <div
+                    key={c.candidate_id}
+                    className="flex items-center justify-between rounded-lg px-4 py-2.5 border"
+                    style={{ background: "#0f1012", borderColor: "rgba(255,255,255,0.06)" }}
+                  >
+                    <div>
+                      <p className="text-xs font-medium text-white">{c.name}</p>
+                      <p className="text-[10px]" style={{ color: "rgba(255,255,255,0.35)" }}>
+                        {Math.round(c.score * 100)}% match · rank #{c.rank}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => onAddCandidate(c)}
+                      className="text-xs px-2 py-0.5 rounded transition-colors"
+                      style={{ color: "#d5fa54", border: "1px solid rgba(213,250,84,0.25)" }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(213,250,84,0.08)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                    >
+                      Add
+                    </button>
+                  </div>
+                ))}
+                {filteredPool.length === 0 && (
+                  <p className="text-center text-xs py-2" style={{ color: "rgba(255,255,255,0.3)" }}>No matches</p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Eliminated section */}
         {eliminated_candidates.length > 0 && (
@@ -136,21 +285,49 @@ export default function ResultsPanel({ result, isLoading }: Props) {
 
             {eliminatedOpen && (
               <div className="mt-2 space-y-1.5">
-                {eliminated_candidates.map((ec) => (
-                  <div
-                    key={ec.candidate_id}
-                    className="rounded-lg px-4 py-3 border"
-                    style={{
-                      background: "#0f1012",
-                      borderColor: "rgba(255,255,255,0.06)",
-                    }}
-                  >
-                    <p className="text-xs font-medium text-white">{ec.name}</p>
-                    <p className="mt-0.5 text-xs" style={{ color: "rgba(255,255,255,0.35)" }}>
-                      {ec.elimination_reason}
-                    </p>
-                  </div>
-                ))}
+                {eliminated_candidates.map((ec) => {
+                  const alreadyAdded = allShortlistIds.has(ec.candidate_id);
+                  return (
+                    <div
+                      key={ec.candidate_id}
+                      className="flex items-center gap-3 rounded-lg px-4 py-3 border"
+                      style={{
+                        background: "#0f1012",
+                        borderColor: "rgba(255,255,255,0.06)",
+                      }}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-medium text-white">{ec.name}</p>
+                        <p className="mt-0.5 text-xs" style={{ color: "rgba(255,255,255,0.35)" }}>
+                          {ec.elimination_reason}
+                        </p>
+                      </div>
+                      {entries && !alreadyAdded && (
+                        <button
+                          onClick={() => onAddCandidate({
+                            rank: 0,
+                            candidate_id: ec.candidate_id,
+                            name: ec.name,
+                            score: 0,
+                            explanation: `Override — originally eliminated: ${ec.elimination_reason}`,
+                            feature_vector: { required_skills_overlap: 0, preferred_skills_overlap: 0, industry_preferred_match: 0, experience_delta: 0, seniority_match: 0, career_trajectory_score: 0, interview_score: 0, culture_fit_score: 0, management_match: 0, soft_constraint_score: 0 },
+                            flagged_for_review: false,
+                            constraint_matches: [],
+                          })}
+                          className="shrink-0 text-xs px-2 py-0.5 rounded transition-colors"
+                          style={{ color: "#ff66c4", border: "1px solid rgba(255,102,196,0.25)" }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,102,196,0.08)")}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                        >
+                          Override
+                        </button>
+                      )}
+                      {entries && alreadyAdded && (
+                        <span className="shrink-0 text-[10px]" style={{ color: "rgba(255,255,255,0.25)" }}>Added</span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

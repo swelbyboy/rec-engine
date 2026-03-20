@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronUp, ArrowUp, ArrowDown, X } from "lucide-react";
 import type { CandidateRequirement, RankedCandidate } from "../types";
 
 const FEATURE_LABELS: Record<string, string> = {
@@ -15,7 +15,6 @@ const FEATURE_LABELS: Record<string, string> = {
   soft_constraint_score: "Constraint compliance",
 };
 
-// Fields in FeatureVector that are not scores
 const SKIP_FEATURE_KEYS = new Set(["candidate_id"]);
 
 function scoreAccent(score: number): string {
@@ -48,21 +47,33 @@ function formatRequirementValue(req: CandidateRequirement): string {
   return String(val);
 }
 
-/** Split explanation into paragraphs (blank-line separated or sentence groups) */
 function parseExplanation(text: string): string[] {
   const byBlankLine = text.split(/\n\s*\n/).map((p) => p.replace(/\n/g, " ").trim()).filter(Boolean);
   if (byBlankLine.length >= 2) return byBlankLine;
-  // Fallback: split into ~2 sentence chunks
   const sentences = text.match(/[^.!?]+[.!?]+/g) ?? [text];
   const mid = Math.ceil(sentences.length / 2);
   return [sentences.slice(0, mid).join(" "), sentences.slice(mid).join(" ")].filter(Boolean);
 }
 
-interface Props {
-  candidate: RankedCandidate;
+interface AugmentProps {
+  rank: number;
+  totalActive: number;
+  removed: boolean;
+  note: string;
+  isOverride?: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onRemove: () => void;
+  onUndo: () => void;
+  onNoteChange: (note: string) => void;
 }
 
-export default function CandidateCard({ candidate }: Props) {
+interface Props {
+  candidate: RankedCandidate;
+  augment?: AugmentProps;
+}
+
+export default function CandidateCard({ candidate, augment }: Props) {
   const [expanded, setExpanded] = useState(false);
   const pct = Math.round(candidate.score * 100);
   const accent = scoreAccent(candidate.score);
@@ -72,32 +83,71 @@ export default function CandidateCard({ candidate }: Props) {
     ([key]) => !SKIP_FEATURE_KEYS.has(key) && FEATURE_LABELS[key]
   );
 
+  const isRemoved = augment?.removed ?? false;
+
   return (
     <div
-      className="rounded-xl border overflow-hidden"
+      className="rounded-xl border overflow-hidden transition-opacity"
       style={{
         background: "#0f1012",
         borderColor: candidate.flagged_for_review ? "rgba(217,119,6,0.35)" : "rgba(255,255,255,0.07)",
+        opacity: isRemoved ? 0.45 : 1,
       }}
     >
       {/* Collapsed row */}
-      <button
-        onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-start gap-3 px-4 py-3.5 text-left"
-      >
+      <div className="flex items-start gap-2 px-4 py-3.5">
+        {/* Reorder arrows (augment mode only) */}
+        {augment && !isRemoved && (
+          <div className="flex flex-col gap-0.5 mt-1 shrink-0">
+            <button
+              onClick={augment.onMoveUp}
+              disabled={augment.rank <= 1}
+              className="p-0.5 rounded transition-colors disabled:opacity-20"
+              style={{ color: "rgba(255,255,255,0.4)" }}
+              onMouseEnter={(e) => { if (!augment.rank || augment.rank > 1) (e.currentTarget as HTMLElement).style.color = "#d5fa54"; }}
+              onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.color = "rgba(255,255,255,0.4)"}
+              title="Move up"
+            >
+              <ArrowUp className="h-3 w-3" />
+            </button>
+            <button
+              onClick={augment.onMoveDown}
+              disabled={augment.rank >= augment.totalActive}
+              className="p-0.5 rounded transition-colors disabled:opacity-20"
+              style={{ color: "rgba(255,255,255,0.4)" }}
+              onMouseEnter={(e) => { if (augment.rank < augment.totalActive) (e.currentTarget as HTMLElement).style.color = "#d5fa54"; }}
+              onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.color = "rgba(255,255,255,0.4)"}
+              title="Move down"
+            >
+              <ArrowDown className="h-3 w-3" />
+            </button>
+          </div>
+        )}
+
         {/* Rank badge */}
         <span
           className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold"
-          style={scoreBadgeStyle(candidate.score)}
+          style={isRemoved ? { background: "rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.3)", border: "1px solid rgba(255,255,255,0.1)" } : scoreBadgeStyle(candidate.score)}
         >
-          {candidate.rank}
+          {augment ? augment.rank : candidate.rank}
         </span>
 
-        {/* Name + snippet */}
-        <div className="flex-1 min-w-0">
+        {/* Clickable name + snippet */}
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="flex-1 min-w-0 text-left"
+        >
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-white">{candidate.name}</span>
-            {candidate.flagged_for_review && (
+            <span
+              className="text-sm font-medium"
+              style={{
+                color: isRemoved ? "rgba(255,255,255,0.35)" : "white",
+                textDecoration: isRemoved ? "line-through" : "none",
+              }}
+            >
+              {candidate.name}
+            </span>
+            {candidate.flagged_for_review && !isRemoved && (
               <span
                 className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium"
                 style={{ background: "rgba(217,119,6,0.15)", color: "#f59e0b" }}
@@ -105,36 +155,79 @@ export default function CandidateCard({ candidate }: Props) {
                 Review needed
               </span>
             )}
+            {augment?.isOverride && !isRemoved && (
+              <span
+                className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium"
+                style={{ background: "rgba(255,102,196,0.12)", color: "#ff66c4", border: "1px solid rgba(255,102,196,0.2)" }}
+              >
+                Override
+              </span>
+            )}
           </div>
-          {candidate.explanation ? (
-            <p className="mt-1 text-xs leading-relaxed line-clamp-2" style={{ color: "rgba(255,255,255,0.4)" }}>
-              {paragraphs[0]}
-            </p>
-          ) : (
-            <div className="mt-1.5 space-y-1.5">
-              <div className="h-2 w-3/4 rounded animate-pulse" style={{ background: "rgba(255,255,255,0.08)" }} />
-              <div className="h-2 w-1/2 rounded animate-pulse" style={{ background: "rgba(255,255,255,0.05)" }} />
-            </div>
+          {!isRemoved && (
+            candidate.explanation ? (
+              <p className="mt-1 text-xs leading-relaxed line-clamp-2" style={{ color: "rgba(255,255,255,0.4)" }}>
+                {paragraphs[0]}
+              </p>
+            ) : (
+              <div className="mt-1.5 space-y-1.5">
+                <div className="h-2 w-3/4 rounded animate-pulse" style={{ background: "rgba(255,255,255,0.08)" }} />
+                <div className="h-2 w-1/2 rounded animate-pulse" style={{ background: "rgba(255,255,255,0.05)" }} />
+              </div>
+            )
           )}
-        </div>
+        </button>
 
-        {/* Match score */}
-        <div className="shrink-0 flex flex-col items-end gap-1.5 ml-2">
-          <div className="flex items-center gap-1.5">
-            <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.3)" }}>Rank score</span>
-            <span className="text-xs font-semibold" style={{ color: accent }}>{pct}%</span>
+        {/* Match score (hidden when removed) */}
+        {!isRemoved && (
+          <div className="shrink-0 flex flex-col items-end gap-1.5 ml-2">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.3)" }}>Rank score</span>
+              <span className="text-xs font-semibold" style={{ color: accent }}>{pct}%</span>
+            </div>
+            <div className="w-20 h-1 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,0.08)" }}>
+              <div className="h-full rounded-full" style={{ width: `${pct}%`, background: accent }} />
+            </div>
           </div>
-          <div className="w-20 h-1 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,0.08)" }}>
-            <div className="h-full rounded-full" style={{ width: `${pct}%`, background: accent }} />
-          </div>
-        </div>
-
-        {expanded ? (
-          <ChevronUp className="mt-0.5 h-3.5 w-3.5 shrink-0" style={{ color: "rgba(255,255,255,0.3)" }} />
-        ) : (
-          <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0" style={{ color: "rgba(255,255,255,0.3)" }} />
         )}
-      </button>
+
+        {/* Augmentation controls */}
+        {augment && (
+          <div className="shrink-0 flex items-center gap-1 ml-2">
+            {isRemoved ? (
+              <button
+                onClick={augment.onUndo}
+                className="text-xs px-2 py-0.5 rounded transition-colors"
+                style={{ color: "#5170ff", border: "1px solid rgba(81,112,255,0.3)" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(81,112,255,0.1)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                Undo
+              </button>
+            ) : (
+              <button
+                onClick={augment.onRemove}
+                className="p-1 rounded transition-colors"
+                style={{ color: "rgba(255,255,255,0.3)" }}
+                onMouseEnter={(e) => (e.currentTarget as HTMLElement).style.color = "#ff66c4"}
+                onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.color = "rgba(255,255,255,0.3)"}
+                title="Remove from shortlist"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Expand toggle */}
+        <button onClick={() => setExpanded((v) => !v)} className="shrink-0 mt-0.5">
+          {expanded ? (
+            <ChevronUp className="h-3.5 w-3.5" style={{ color: "rgba(255,255,255,0.3)" }} />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5" style={{ color: "rgba(255,255,255,0.3)" }} />
+          )}
+        </button>
+      </div>
 
       {/* Expanded body */}
       {expanded && (
@@ -160,6 +253,29 @@ export default function CandidateCard({ candidate }: Props) {
               </div>
             )}
           </div>
+
+          {/* Recruiter note (augment mode only) */}
+          {augment && (
+            <div>
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.3)" }}>
+                Recruiter note
+              </p>
+              <textarea
+                value={augment.note}
+                onChange={(e) => augment.onNoteChange(e.target.value)}
+                placeholder="Add a note for the hirer..."
+                rows={2}
+                className="w-full resize-none rounded-lg px-3 py-2 text-xs outline-none"
+                style={{
+                  background: "rgba(255,255,255,0.05)",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  color: "rgba(255,255,255,0.7)",
+                }}
+                onFocus={(e) => (e.currentTarget.style.borderColor = "rgba(213,250,84,0.4)")}
+                onBlur={(e) => (e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)")}
+              />
+            </div>
+          )}
 
           {/* Candidate requirements not addressed by JD */}
           {candidate.candidate_requirements && candidate.candidate_requirements.length > 0 && (
@@ -211,61 +327,58 @@ export default function CandidateCard({ candidate }: Props) {
 
           {/* Constraint checks */}
           {(() => {
-            // Filter out uninteresting "no candidate restriction" rows — the candidate simply
-            // hasn't stated a restriction, so it defaults to compatible. Only show them when
-            // flagged for verification.
             const meaningful = candidate.constraint_matches.filter(
               (m) => m.match_type !== "no_candidate_constraint" || !m.compatible || m.flagged
             );
             if (meaningful.length === 0) return null;
             return (
-            <div>
-              <p className="mb-3 text-[10px] font-semibold uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.3)" }}>
-                Constraint checks
-              </p>
-              <div className="overflow-hidden rounded-lg border" style={{ borderColor: "rgba(255,255,255,0.08)" }}>
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr style={{ background: "rgba(255,255,255,0.04)", borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
-                      <th className="px-3 py-2 text-left font-medium" style={{ color: "rgba(255,255,255,0.35)" }}>Constraint</th>
-                      <th className="px-3 py-2 text-center font-medium" style={{ color: "rgba(255,255,255,0.35)" }}>OK?</th>
-                      <th className="px-3 py-2 text-left font-medium" style={{ color: "rgba(255,255,255,0.35)" }}>Detail</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {meaningful.map((m, i) => (
-                      <tr
-                        key={i}
-                        className="border-t"
-                        style={{
-                          borderColor: "rgba(255,255,255,0.05)",
-                          background: m.flagged ? "rgba(217,119,6,0.07)" : "transparent",
-                        }}
-                      >
-                        <td className="px-3 py-2" style={{ color: "rgba(255,255,255,0.5)" }}>
-                          {matchTypeLabel(m.match_type)}
-                        </td>
-                        <td className="px-3 py-2 text-center font-semibold">
-                          {m.compatible ? (
-                            <span style={{ color: "#d5fa54" }}>✓</span>
-                          ) : (
-                            <span style={{ color: "#ff66c4" }}>✗</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2" style={{ color: "rgba(255,255,255,0.5)" }}>
-                          {m.flagged && (
-                            <span className="mr-1.5 inline-flex items-center rounded px-1 py-0.5 text-[10px] font-medium" style={{ background: "rgba(217,119,6,0.15)", color: "#f59e0b" }}>
-                              verify
-                            </span>
-                          )}
-                          {m.reason}
-                        </td>
+              <div>
+                <p className="mb-3 text-[10px] font-semibold uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.3)" }}>
+                  Constraint checks
+                </p>
+                <div className="overflow-hidden rounded-lg border" style={{ borderColor: "rgba(255,255,255,0.08)" }}>
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr style={{ background: "rgba(255,255,255,0.04)", borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
+                        <th className="px-3 py-2 text-left font-medium" style={{ color: "rgba(255,255,255,0.35)" }}>Constraint</th>
+                        <th className="px-3 py-2 text-center font-medium" style={{ color: "rgba(255,255,255,0.35)" }}>OK?</th>
+                        <th className="px-3 py-2 text-left font-medium" style={{ color: "rgba(255,255,255,0.35)" }}>Detail</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {meaningful.map((m, i) => (
+                        <tr
+                          key={i}
+                          className="border-t"
+                          style={{
+                            borderColor: "rgba(255,255,255,0.05)",
+                            background: m.flagged ? "rgba(217,119,6,0.07)" : "transparent",
+                          }}
+                        >
+                          <td className="px-3 py-2" style={{ color: "rgba(255,255,255,0.5)" }}>
+                            {matchTypeLabel(m.match_type)}
+                          </td>
+                          <td className="px-3 py-2 text-center font-semibold">
+                            {m.compatible ? (
+                              <span style={{ color: "#d5fa54" }}>✓</span>
+                            ) : (
+                              <span style={{ color: "#ff66c4" }}>✗</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2" style={{ color: "rgba(255,255,255,0.5)" }}>
+                            {m.flagged && (
+                              <span className="mr-1.5 inline-flex items-center rounded px-1 py-0.5 text-[10px] font-medium" style={{ background: "rgba(217,119,6,0.15)", color: "#f59e0b" }}>
+                                verify
+                              </span>
+                            )}
+                            {m.reason}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            </div>
             );
           })()}
         </div>

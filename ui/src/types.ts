@@ -123,10 +123,53 @@ export interface PipelineStepState {
 }
 
 // Streaming event types
+export interface ShortlistEntry {
+  candidate: RankedCandidate;
+  note: string;
+  removed: boolean;
+  manuallyAdded: boolean;
+}
+
+export interface HirerCandidate {
+  candidate_id: string;
+  name: string;
+  seniority_level: string;
+  skills: string[];
+  score: number;
+  note: string;
+}
+
+export interface ModelStatus {
+  trained_at?: string;
+  total_records?: number;
+  feedback_count: number;
+  training_data_count: number;
+  models?: {
+    logistic?: { auc: number; cv_auc: number };
+    gbt?: { auc: number; cv_auc: number };
+  };
+}
+
+export interface RetrainResult {
+  logistic: { auc: number; cv_auc: number };
+  gbt: { auc: number; cv_auc: number };
+  total_records: number;
+  trained_at: string;
+}
+
+export interface FeedbackRecord {
+  candidate_id: string;
+  job_id: string;
+  features: number[];
+  outcome: 0 | 1;
+  source: "recruiter";
+}
+
 export type StreamEvent =
   | { type: "step"; step: PipelineStep }
   | {
       type: "meta";
+      job_id: string;
       job_title: string;
       job_details: JobDetails;
       ranked_candidates: RankedCandidate[];
