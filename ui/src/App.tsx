@@ -80,7 +80,7 @@ export default function App() {
     setSteps(STEPS.map((s) => ({ ...s, status: "pending" })));
 
     try {
-      for await (const event of recommendStream({ jd_text: jdText })) {
+      for await (const event of recommendStream({ jd_text: jdText, profile: "gbt" })) {
         if (event.type === "step") {
           setSteps((prev) => transitionSteps(prev, event.step));
         } else if (event.type === "meta") {
