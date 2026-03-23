@@ -123,6 +123,7 @@ export async function uploadTrainingData(file: File): Promise<{ records_added: n
 
 export async function* recommendStream(params: {
   jd_text: string;
+  profile?: string;
 }): AsyncGenerator<StreamEvent> {
   const res = await fetch("/api/recommend/stream", {
     method: "POST",
