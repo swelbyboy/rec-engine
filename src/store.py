@@ -32,7 +32,7 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 
 # Increment this whenever the Candidate schema gains new extracted fields.
 # Any cached file with a different version is treated as stale and re-processed.
-CACHE_SCHEMA_VERSION = 2  # v2: added discipline field
+CACHE_SCHEMA_VERSION = 3  # v3: discipline now extracted by LLM (was always defaulting to "other")
 
 
 def _get_openai_client():

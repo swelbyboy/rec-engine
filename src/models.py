@@ -35,7 +35,7 @@ class Constraint(BaseModel):
     category: str  # e.g. "location", "compensation", "visa", "skills", "culture"
     description: str
     canonical_key: str | None = None  # e.g. "office_days_per_week", "salary_min"
-    value: str | float | bool | list | None = None
+    value: str | float | bool | list | dict | None = None
     operator: ConstraintOperator
     weight: float = Field(default=1.0, ge=0.0, le=1.0)
     confidence: float = Field(ge=0.0, le=1.0)

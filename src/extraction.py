@@ -347,6 +347,11 @@ CANDIDATE_FULL_TOOL_SCHEMA = {
             },
             "interview_score": {"type": "number"},
             "culture_fit_score": {"type": "number"},
+            "discipline": {
+                "type": "string",
+                "enum": ["engineering", "data", "ml_ai", "product", "design", "devops", "sales", "other"],
+                "description": "Primary professional discipline of the candidate",
+            },
             "constraints": {
                 "type": "array",
                 "description": "All candidate-side constraints, deduplicated across all sources",
@@ -640,6 +645,7 @@ def merge_candidate_sources(
         interview_score=float(result.get("interview_score") or 0.5),
         culture_fit_score=float(result.get("culture_fit_score") or 0.5),
         constraints=constraints,
+        discipline=result.get("discipline", "other"),
     )
 
 
@@ -704,4 +710,5 @@ def parse_candidate(raw: dict) -> Candidate:
         interview_score=float(result.get("interview_score") or 0.5),
         culture_fit_score=float(result.get("culture_fit_score") or 0.5),
         constraints=constraints,
+        discipline=result.get("discipline", "other"),
     )
