@@ -1,4 +1,4 @@
-import type { CandidateRow, FeatureVector, FeedbackRecord, LiveJobSummary, LiveRecommendResult, ModelStatus, RecommendResult, RetrainResult, StreamEvent } from "../types";
+import type { CandidateRow, FeatureVector, FeedbackRecord, LiveJobSummary, LiveRecommendResult, LiveRunSummary, ModelStatus, RecommendResult, RetrainResult, StreamEvent } from "../types";
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
@@ -138,6 +138,14 @@ export async function runLiveRecommend(params: {
     method: "POST",
     body: JSON.stringify(params),
   });
+}
+
+export async function listLiveRuns(jobOrderId: number): Promise<LiveRunSummary[]> {
+  return apiFetch<LiveRunSummary[]>(`/live/runs?job_order_id=${jobOrderId}`);
+}
+
+export async function getLiveRun(runId: string): Promise<LiveRecommendResult> {
+  return apiFetch<LiveRecommendResult>(`/live/runs/${runId}`);
 }
 
 export async function* recommendStream(params: {

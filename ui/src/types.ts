@@ -217,6 +217,13 @@ export interface LiveRankedCandidate {
   verdict: LiveVerdict;
   rationale: string;
   flagged_for_review: boolean;
+  matched_skills: string[];
+  missing_required_skills: string[];
+  years_experience: number;
+  seniority_level: string;
+  bullhorn_id: string;
+  /** "" when BULLHORN_TENANT_URL isn't configured server-side — render the id as plain text, not a link. */
+  bullhorn_url: string;
 }
 
 export interface LiveEliminatedCandidate {
@@ -226,10 +233,24 @@ export interface LiveEliminatedCandidate {
 }
 
 export interface LiveRecommendResult {
+  run_id: string;
   job: { id: string; title: string; company: string };
   coarse_brief: LiveCoarseBrief;
   ranked: LiveRankedCandidate[];
   eliminated: LiveEliminatedCandidate[];
   candidates_considered: number;
+  candidates_indexed: number;
   candidates_passed_filter: number;
+  candidates_reranked: number;
+}
+
+export interface LiveRunSummary {
+  run_id: string;
+  job_order_id: number;
+  completed_at: string;
+  title: string;
+  company: string;
+  candidates_considered: number;
+  candidates_passed_filter: number;
+  candidates_reranked: number;
 }

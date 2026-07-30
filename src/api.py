@@ -1142,12 +1142,19 @@ def list_live_jobs() -> list[dict]:
 
 class LiveRecommendRequest(BaseModel):
     job_order_id: int
-    candidate_limit: int = 100
-    rerank_limit: int = 30
+    # None = scan the entire indexed candidate universe for hard-constraint
+    # filtering (the correct default for real use); set only to cap the scan
+    # for fast local dev iteration on a subset.
+    candidate_limit: int | None = None
+    # Sanity ceiling on total candidates entering the (chunked) fine-rerank
+    # stage — not "must fit in one call" (funnel_rerank.fine_rerank chunks
+    # arbitrarily-sized pools). See run_live_pipeline's docstring.
+    rerank_limit: int = 200
 
 
 @router.post("/live/recommend")
 def live_recommend(request: LiveRecommendRequest) -> JSONResponse:
+    from . import live_run_store
     from .funnel_rerank import run_live_pipeline
     try:
         result = run_live_pipeline(
@@ -1157,9 +1164,44 @@ def live_recommend(request: LiveRecommendRequest) -> JSONResponse:
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Live pipeline error: {exc}") from exc
+
+    live_run_store.save_run(request.job_order_id, result)  # stamps result["run_id"] in place
     return JSONResponse(content=result)
+
+
+@router.get("/live/runs")
+def list_live_runs(job_order_id: int) -> list[dict]:
+    """Past run summaries for a job, newest-first — powers the run-history picker."""
+    from . import live_run_store
+    return live_run_store.list_runs(job_order_id)
+
+
+@router.get("/live/runs/{run_id}")
+def get_live_run(run_id: str) -> JSONResponse:
+    """Full result for one past run — same shape /live/recommend returns."""
+    from . import live_run_store
+    result = live_run_store.get_run(run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    return JSONResponse(content=result)
+
+
+@router.post("/live/index/refresh")
+def refresh_live_index() -> dict:
+    """Drop the in-process cached candidate index.
+
+    Call this after running `python -m src.candidate_index build` in a
+    separate process while the server is already up, so the next
+    /live/recommend picks up the new data instead of serving the stale
+    in-memory copy. Does not rebuild anything itself — that's the CLI's job.
+    """
+    from . import candidate_index
+    candidate_index.clear_cache()
+    return {"status": "cache cleared — next /live/recommend will reload from disk"}
 
 
 # ---------------------------------------------------------------------------
