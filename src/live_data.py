@@ -78,19 +78,53 @@ def _get(table: str, profile: str, params: dict) -> list[dict]:
 # Jobs
 # ---------------------------------------------------------------------------
 
-def fetch_open_job_orders(limit: int = 30) -> list[dict]:
-    """List currently-open roles (for picking demo roles), from the dim_job_order mart."""
-    rows = _get(
-        "dim_job_order",
-        "app",
+def fetch_active_mind_roles(limit: int = 30) -> list[dict]:
+    """List the roles Mind is actively matchmaking for right now.
+
+    Deliberately NOT a Bullhorn status/is_open filter — Mind's own /api/roles
+    (apps/web/src/app/api/roles/route.ts) determines its active-role list
+    purely from mind.pinned_roles (pinned_by='admin'); a 2026-07-27 redesign
+    where "the pin is the curation act", with no status/owner/date filter at
+    all. Mirroring that exact source here (instead of the broader is_open set
+    this originally used) means the PoC's role picker always matches what a
+    recruiter actually sees in Mind, which matters for an apples-to-apples
+    side-by-side demo.
+    """
+    pins = _get(
+        "pinned_roles",
+        "mind",
         {
-            "select": "job_order_id,job_title,company_name,is_open",
-            "is_open": "eq.true",
-            "order": "job_order_id.desc",
+            "select": "role_id,pinned_at",
+            "pinned_by": "eq.admin",
+            "order": "pinned_at.desc",
             "limit": str(limit),
         },
     )
-    return rows
+    role_ids = [p["role_id"] for p in pins]
+    if not role_ids:
+        return []
+
+    id_list = ",".join(str(i) for i in role_ids)
+    rows = _get(
+        "bullhorn_job_orders",
+        "app",
+        {"select": "id,title,raw_data", "id": f"in.({id_list})"},
+    )
+
+    by_id: dict[int, dict] = {}
+    for row in rows:
+        raw_data = row.get("raw_data") or {}
+        if isinstance(raw_data, str):
+            raw_data = json.loads(raw_data) if raw_data else {}
+        company = (raw_data.get("clientCorporation") or {}).get("name", "")
+        by_id[row["id"]] = {
+            "job_order_id": row["id"],
+            "job_title": row.get("title") or "",
+            "company_name": company,
+        }
+
+    # Preserve pin order (most-recently-pinned first), matching Mind's buildPinnedRoleList.
+    return [by_id[rid] for rid in role_ids if rid in by_id]
 
 
 def fetch_job_raw(job_order_id: int) -> dict:

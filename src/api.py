@@ -1133,9 +1133,9 @@ def model_status() -> JSONResponse:
 # ---------------------------------------------------------------------------
 @router.get("/live/jobs")
 def list_live_jobs() -> list[dict]:
-    from .live_data import fetch_open_job_orders
+    from .live_data import fetch_active_mind_roles
     try:
-        return fetch_open_job_orders(limit=30)
+        return fetch_active_mind_roles(limit=30)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to fetch live job orders: {exc}") from exc
 
