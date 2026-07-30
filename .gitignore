@@ -12,6 +12,12 @@ build/
 # Environment — never commit secrets
 .env
 
+# Live candidate embedding index — real Mothership PII, never commit
+data/live_index/
+
+# Persisted live-pipeline run results — same PII concern
+data/live_runs/
+
 # Node / frontend
 ui/node_modules/
 ui/dist/

@@ -397,16 +397,42 @@ def check_compatibility(
 # ---------------------------------------------------------------------------
 # run_constraint_engine — full engine over a job + candidate pair
 # ---------------------------------------------------------------------------
+def embed_constraints(constraints: Sequence[Constraint]) -> dict[str, np.ndarray]:
+    """Batch-embed a list of constraints once, keyed by constraint id.
+
+    Used to precompute embeddings outside the per-candidate loop — e.g. a
+    job's ~10 constraints need embedding once per pipeline run, not once per
+    candidate; a live candidate index precomputes every candidate's constraint
+    embeddings once at build time so run_constraint_engine never needs a live
+    API call when scanning a large candidate pool.
+    """
+    if not constraints:
+        return {}
+    vectors = _batch_embed([c.description for c in constraints])
+    return {c.id: v for c, v in zip(constraints, vectors)}
+
+
 def run_constraint_engine(
     job: JobDescription,
     candidate: Candidate,
+    *,
+    employer_embeddings: dict[str, np.ndarray] | None = None,
+    candidate_embeddings: dict[str, np.ndarray] | None = None,
 ) -> CompatibilityResult:
     """Run the full constraint engine for a (job, candidate) pair.
 
     Three-phase matching:
     1. Canonical key matching (deterministic, no API calls)
-    2. Batch-embed all unmatched employer constraints at once → semantic matching
+    2. Semantic matching via embeddings → semantic matching
     3. No-match fallback for remaining unmatched employer constraints
+
+    employer_embeddings / candidate_embeddings: optional precomputed lookups
+    (constraint id -> vector, e.g. from embed_constraints() or a persisted
+    index). When provided, phase 2 makes zero OpenAI calls for that side —
+    this is what lets a live pipeline run the engine over an entire candidate
+    universe without one embedding call per candidate. When omitted, this
+    embeds live exactly as before (used by tests and the synthetic-fixture
+    path, where a handful of calls is fine).
 
     Returns a CompatibilityResult indicating whether the candidate is eliminated
     and the full set of per-constraint match results.
@@ -414,13 +440,13 @@ def run_constraint_engine(
     emp_constraints = job.constraints
     can_constraints = candidate.constraints
 
-    # Pre-compute candidate embeddings for semantic fallback (one batch call)
-    can_embeddings: list[np.ndarray] = []
-    if can_constraints:
+    if candidate_embeddings is not None:
+        can_emb_by_id = candidate_embeddings
+    else:
         try:
-            can_embeddings = _batch_embed([c.description for c in can_constraints])
+            can_emb_by_id = embed_constraints(can_constraints)
         except Exception:
-            can_embeddings = []
+            can_emb_by_id = {}
 
     unmatched_candidate_ids: set[str] = {c.id for c in can_constraints}
     matched_candidate_ids: set[str] = set()
@@ -442,43 +468,52 @@ def run_constraint_engine(
         if not found:
             unmatched_emp_ids.add(emp_c.id)
 
-    # Phase 2: batch-embed all unmatched employer constraints, then semantic match
+    # Phase 2: semantic match on remaining unmatched constraints, via embeddings
     semantic_results: dict[str, ConstraintMatch] = {}
-    if unmatched_emp_ids and can_embeddings:
+    if unmatched_emp_ids and can_emb_by_id:
         emp_unmatched = [c for c in emp_constraints if c.id in unmatched_emp_ids]
         try:
-            emp_embeddings = _batch_embed([c.description for c in emp_unmatched])
-            for i, emp_c in enumerate(emp_unmatched):
+            if employer_embeddings is not None:
+                emp_emb_by_id = employer_embeddings
+            else:
+                emp_emb_by_id = embed_constraints(emp_unmatched)
+
+            for emp_c in emp_unmatched:
+                emp_emb = emp_emb_by_id.get(emp_c.id)
+                if emp_emb is None:
+                    continue
                 best_score = 0.0
-                best_j = -1
-                for j, can_c in enumerate(can_constraints):
+                best_can_c: Constraint | None = None
+                for can_c in can_constraints:
                     if can_c.id in matched_candidate_ids:
                         continue
-                    sim = _cosine_similarity(emp_embeddings[i], can_embeddings[j])
+                    can_emb = can_emb_by_id.get(can_c.id)
+                    if can_emb is None:
+                        continue
+                    sim = _cosine_similarity(emp_emb, can_emb)
                     if sim > best_score:
                         best_score = sim
-                        best_j = j
+                        best_can_c = can_c
 
-                if best_j >= 0 and best_score >= SEMANTIC_THRESHOLD:
-                    can_c = can_constraints[best_j]
-                    compatible, score = _evaluate_operator_pair(emp_c, can_c)
+                if best_can_c is not None and best_score >= SEMANTIC_THRESHOLD:
+                    compatible, score = _evaluate_operator_pair(emp_c, best_can_c)
                     semantic_results[emp_c.id] = ConstraintMatch(
                         employer_constraint_id=emp_c.id,
-                        candidate_constraint_id=can_c.id,
+                        candidate_constraint_id=best_can_c.id,
                         match_type=MatchType.semantic,
                         compatible=compatible,
                         score=score,
                         reason=(
                             f"Semantic match (similarity={best_score:.2f}) between "
-                            f"'{emp_c.description}' and '{can_c.description}'"
+                            f"'{emp_c.description}' and '{best_can_c.description}'"
                         ),
                         flagged_for_review=(
-                            (can_c.confidence < 0.85)
+                            (best_can_c.confidence < 0.85)
                             or (emp_c.confidence < 0.85)
                             or (AMBIGUOUS_BAND_LOW < best_score < SEMANTIC_THRESHOLD)
                         ),
                     )
-                    matched_candidate_ids.add(can_c.id)
+                    matched_candidate_ids.add(best_can_c.id)
         except Exception:
             pass  # Fall through to no-match for unmatched constraints
 

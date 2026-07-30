@@ -16,13 +16,25 @@ candidate on each query.
 from __future__ import annotations
 
 import os
+from typing import Protocol
 
 import numpy as np
 
 from .models import Candidate, JobDescription
-from .store import CandidateStore
 
 _openai_client = None
+
+
+class EmbeddingStore(Protocol):
+    """Anything retrieve_top_k can search: an ID-ordered embedding matrix plus lookup by ID.
+
+    Implemented by both the fixture-backed CandidateStore (store.py) and the
+    persisted live-candidate index (candidate_index.py) — retrieval doesn't
+    care which candidate source it's ranking.
+    """
+
+    def embedding_matrix(self) -> tuple[list[str], np.ndarray]: ...
+    def get(self, candidate_id: str) -> Candidate | None: ...
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 
@@ -72,15 +84,28 @@ _MIN_RETRIEVAL_SIMILARITY = 0.25  # candidates below this cosine sim are semanti
 
 def retrieve_top_k(
     job: JobDescription,
-    store: CandidateStore,
+    store: EmbeddingStore,
     top_k: int = 50,
+    min_similarity: float | None = None,
 ) -> list[tuple[Candidate, float]]:
     """Return top-K candidates by semantic similarity to the job description.
 
-    Candidates with cosine similarity below _MIN_RETRIEVAL_SIMILARITY are excluded
-    before ranking. This naturally handles cross-discipline cases (e.g. a sales JD
-    scores very low against tech candidates) without any hardcoded discipline rules.
+    Candidates with cosine similarity below min_similarity are excluded before
+    ranking (defaults to _MIN_RETRIEVAL_SIMILARITY). This naturally handles
+    cross-discipline cases (e.g. a sales JD scores very low against tech
+    candidates) without any hardcoded discipline rules.
+
+    Pass min_similarity=0.0 when narrowing a pool that's already been
+    positively qualified some other way (e.g. candidates who already passed
+    hard-constraint filtering) — a relevance floor makes sense before any
+    compatibility check has run, but applying it again afterwards, purely to
+    cap how many go into an LLM prompt, risks returning empty (and silently
+    dropping otherwise-qualified candidates) if everyone happens to have
+    sparse bio text that embeds below the floor.
     """
+    if min_similarity is None:
+        min_similarity = _MIN_RETRIEVAL_SIMILARITY
+
     ids, matrix = store.embedding_matrix()
     if not ids:
         return []
@@ -101,11 +126,11 @@ def retrieve_top_k(
     scores = normed_matrix @ job_norm  # shape: (n_filtered,)
 
     # Apply minimum similarity threshold — excludes semantically irrelevant candidates
-    eligible = np.where(scores >= _MIN_RETRIEVAL_SIMILARITY)[0]
+    eligible = np.where(scores >= min_similarity)[0]
     if len(eligible) == 0:
         print(
             f"  [retrieval] No candidates above similarity threshold "
-            f"{_MIN_RETRIEVAL_SIMILARITY} (best: {scores.max():.3f}) — returning empty.",
+            f"{min_similarity} (best: {scores.max():.3f}) — returning empty.",
             flush=True,
         )
         return []

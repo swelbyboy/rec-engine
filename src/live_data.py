@@ -26,7 +26,9 @@ import re
 import httpx
 from dotenv import load_dotenv
 
-from .models import Candidate, Constraint, ConstraintOperator, ConstraintSide, ConstraintType
+from .models import Candidate, Constraint, ConstraintOperator, ConstraintSide, ConstraintType, Discipline
+
+_VALID_DISCIPLINES = set(Discipline.__args__)
 
 load_dotenv()
 
@@ -192,6 +194,31 @@ def fetch_candidates_raw(candidate_ids: list[int] | None = None, limit: int = 20
     return _get("candidates", "app", params)
 
 
+def fetch_all_candidates_raw(page_size: int = 1000) -> list[dict]:
+    """Fetch every row in app.candidates, paginating past PostgREST's per-request row cap.
+
+    Used to build the full candidate embedding index (candidate_index.py) —
+    not for per-request pipeline runs, which read the index instead of
+    hitting Supabase for the whole table each time.
+    """
+    all_rows: list[dict] = []
+    start = 0
+    while True:
+        resp = httpx.get(
+            f"{_SUPABASE_URL}/rest/v1/candidates",
+            headers={**_headers("app"), "Range-Unit": "items", "Range": f"{start}-{start + page_size - 1}"},
+            params={"select": _CANDIDATE_SELECT, "order": "candidate_id"},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        page = resp.json()
+        all_rows.extend(page)
+        if len(page) < page_size:
+            break
+        start += page_size
+    return all_rows
+
+
 def _seniority_from_years(years: float) -> str:
     if years >= 10:
         return "lead"
@@ -324,6 +351,11 @@ def candidate_row_to_model(row: dict) -> Candidate:
     if not isinstance(skills, list):
         skills = []
 
+    title_families = row.get("title_families") or []
+    discipline: Discipline = "other"
+    if isinstance(title_families, list) and title_families and title_families[0] in _VALID_DISCIPLINES:
+        discipline = title_families[0]
+
     return Candidate(
         id=str(row["candidate_id"]),
         name=name,
@@ -339,7 +371,7 @@ def candidate_row_to_model(row: dict) -> Candidate:
         interview_score=0.5,
         culture_fit_score=0.5,
         constraints=_build_candidate_constraints(row),
-        discipline="other",
+        discipline=discipline,
     )
 
 

@@ -421,6 +421,23 @@ Use "soft" for preferences, desirables, and implicit signals.
 DO NOT infer constraints that are not stated in the text.
 Confidence reflects how explicitly the constraint is stated (0.97 = verbatim; 0.60 = implicit).
 
+required_skills / preferred_skills must contain ONLY concrete, taggable technologies,
+languages, frameworks, and tools (e.g. "Node.js", "NestJS", "PostgreSQL", "Kubernetes") —
+the kind of discrete item a candidate's own structured skills list would plausibly tag.
+Do NOT put in these lists:
+  - Behavioral, leadership, or seniority traits ("technical leadership", "ownership
+    mindset", "hands-on builder", "startup comfort") — these belong in `constraints`
+    (category e.g. "culture" or "experience"), never in required_skills/preferred_skills,
+    since no candidate skill list tags a trait as a "skill".
+  - Specific proprietary product/tool names that describe a way of working rather than a
+    technology the candidate would list ("Claude Code", "Cursor") — capture the underlying
+    requirement as a `constraint` instead (e.g. "must actively use AI coding tools").
+  - Near-duplicate phrasings of the same underlying capability (e.g. "LLMs", "AI agents",
+    "Agentic AI", "LLM agents" for one JD) — collapse these into a single representative
+    skill entry rather than listing near-synonyms as separate items, since each separate
+    entry independently needs to clear a match threshold and near-synonyms otherwise
+    silently penalise a candidate who evidences the capability under just one phrasing.
+
 {CONSTRAINT_KEY_GUIDANCE}
 
 {FEW_SHOT_EXAMPLES}"""

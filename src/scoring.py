@@ -74,6 +74,64 @@ def skill_coverage(candidate_skills: list[str], target_skills: list[str]) -> flo
     return matched / len(target_skills)
 
 
+def _batch_embed_skills(texts: list[str]) -> list[np.ndarray]:
+    """Embed many skill strings in as few OpenAI calls as possible (chunked, not one-at-a-time)."""
+    if not texts:
+        return []
+    client = _get_openai_client()
+    out: list[np.ndarray] = []
+    chunk_size = 500
+    for i in range(0, len(texts), chunk_size):
+        chunk = texts[i : i + chunk_size]
+        resp = client.embeddings.create(model="text-embedding-3-small", input=chunk)
+        out.extend(np.array(item.embedding, dtype=np.float32) for item in resp.data)
+    return out
+
+
+def skill_match_detail_batch(
+    candidate_skills_by_id: dict[str, list[str]],
+    target_skills: list[str],
+) -> dict[str, tuple[list[str], list[str]]]:
+    """Which target skills does each candidate evidence, and which are missing?
+
+    Same embedding-based matching as skill_coverage(), but embeds the whole
+    universe of skill strings across every candidate in ONE batched call
+    (skills repeat heavily across a pool, so this is far cheaper than calling
+    skill_coverage()/skill_match per candidate) and returns the actual
+    matched/missing skill names rather than just a fraction — used to ground
+    rerank rationale in an explicit signal instead of free-text inference.
+    """
+    if not target_skills:
+        return {cid: ([], []) for cid in candidate_skills_by_id}
+
+    def _norm(s: str) -> str:
+        return f"skill: {s.strip().lower()}"
+
+    universe = list(dict.fromkeys(
+        [_norm(s) for s in target_skills]
+        + [_norm(s) for skills in candidate_skills_by_id.values() for s in skills]
+    ))
+    embeddings = _batch_embed_skills(universe)
+    emb_by_text = dict(zip(universe, embeddings))
+
+    target_embs = [(s, emb_by_text[_norm(s)]) for s in target_skills]
+
+    result: dict[str, tuple[list[str], list[str]]] = {}
+    for cid, skills in candidate_skills_by_id.items():
+        if not skills:
+            result[cid] = ([], list(target_skills))
+            continue
+        candidate_embs = [emb_by_text[_norm(s)] for s in skills]
+        matched, missing = [], []
+        for skill, t_emb in target_embs:
+            if max(_cosine(t_emb, c_emb) for c_emb in candidate_embs) >= _SKILL_MATCH_THRESHOLD:
+                matched.append(skill)
+            else:
+                missing.append(skill)
+        result[cid] = (matched, missing)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Embedding-based industry similarity
 # ---------------------------------------------------------------------------

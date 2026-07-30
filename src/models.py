@@ -8,6 +8,14 @@ Discipline = Literal["engineering", "data", "ml_ai", "product", "design", "devop
 
 LLM_MODEL = "claude-haiku-4-5"
 
+# Fine-rerank verdicts are the judgment recruiters actually act on — Haiku's
+# confidence isn't calibrated enough for that (same reasoning Mind's own
+# production pipeline uses to reserve Haiku for cheap triage only, per
+# mind/apps/web/src/lib/reranks/rerank-anthropic.ts). LLM_MODEL (Haiku) stays
+# the default for extraction, the coarse role brief, and triage bucketing,
+# where cheap/coarse is the explicit design intent.
+FINE_RERANK_MODEL = "claude-sonnet-5"
+
 
 class ConstraintType(str, Enum):
     hard = "hard"
