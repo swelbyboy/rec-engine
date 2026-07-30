@@ -22,9 +22,9 @@
 
 ## 4. Automated Constraint Extraction
 
-- [ ] 4.1 Wire live `JobDescription.raw_text` (description + briefing) through rec-engine's existing `extraction.py` (`parse_job_description`)
-- [ ] 4.2 Run extraction against 1-2 real roles and sanity-check the resulting constraints (categories, canonical keys, confidence) by hand
-- [ ] 4.3 Confirm constraint-engine's existing confidence threshold behavior (flagged-for-review path) works as expected on live-derived constraints
+- [x] 4.1 Wire live `JobDescription.raw_text` (description + briefing) through rec-engine's existing `extraction.py` (`parse_job_description`)
+- [x] 4.2 Ran extraction against 3 real open roles by hand. Found and fixed two real bugs in `extraction.py` along the way (see commit `3381113`): (a) caller-supplied `title`/`company` were silently discarded in favour of the LLM's own guess/placeholder because the tool schema requires those keys; (b) the prompt extracted generic company benefits/perks (life assurance, pension, GP access...) as hard "requires" constraints, diluting genuine compatibility signal — scoped the prompt to fit-relevant categories only. Re-verified post-fix: skills/experience/culture extract cleanly, and genuine hard constraints (salary range, location, security clearance) still come through correctly
+- [ ] 4.3 Confirm constraint-engine's confidence threshold behavior (flagged-for-review path) on live-derived constraints — deferred to Task 5 (Funnel Rerank), where the constraint engine actually runs against live candidates
 
 ## 5. Funnel Rerank
 
