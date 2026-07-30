@@ -38,9 +38,9 @@ Verified end-to-end against 2 real live roles (~55-60s for a 60-candidate pool e
 
 ## 6. UI Wiring
 
-- [ ] 6.1 Expose the live pipeline (data adapter → constraint engine → funnel rerank) via a new or adapted API endpoint
-- [ ] 6.2 Point rec-engine's existing React UI results view at live pipeline output
-- [ ] 6.3 Confirm ranked list, verdicts, rationale, and elimination reasons render correctly for a real role
+- [x] 6.1 Exposed via two new endpoints in `api.py`, kept separate from `/recommend`'s synthetic-fixture/weighted-linear path: `GET /api/live/jobs` (role picker) and `POST /api/live/recommend` (runs `run_live_pipeline`). Verified end-to-end over HTTP against real data.
+- [x] 6.2 Revised from the original plan: rec-engine's existing `ResultsPanel`/`RankedCandidate` are tightly coupled to the weighted-linear/ML scoring shape (`feature_vector`, `weights_used`, `profile_used`) this pipeline doesn't produce. Built a new, dedicated "Live PoC" tab (`LivePocPanel.tsx`) instead, reusing the app's shell/styling/tab pattern as the accelerant rather than forcing the existing results view to fit a different data shape.
+- [ ] 6.3 Verified as far as tooling allows this session: `tsc --noEmit` clean, production build succeeds, `/api` proxy correctly round-trips live data end-to-end through the dev server. **Not yet visually confirmed in an actual browser** — the browser automation tool was unavailable this session (account mismatch). Needs a manual look before the live demo.
 
 ## 7. Live Demo Validation
 
