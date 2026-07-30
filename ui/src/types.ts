@@ -182,3 +182,54 @@ export type StreamEvent =
   | { type: "explanation"; rank: number; explanation: string }
   | { type: "done" }
   | { type: "error"; message: string };
+
+// ---------------------------------------------------------------------------
+// Live-data PoC (separate pipeline: constraint engine + coarse/fine LLM
+// rerank against Mothership's live Supabase data, not synthetic fixtures /
+// weighted-linear scoring — see openspec/changes/live-matchmaking-poc)
+// ---------------------------------------------------------------------------
+
+export interface LiveJobSummary {
+  job_order_id: number;
+  job_title: string;
+  company_name: string;
+  is_open: boolean;
+}
+
+export interface LiveFlexibilityNote {
+  constraint_description: string;
+  flex_judgment: "rigid" | "some_flex" | "likely_flexible";
+  reason: string;
+}
+
+export interface LiveCoarseBrief {
+  summary: string;
+  flexibility_notes: LiveFlexibilityNote[];
+  requires_uk_based: "yes" | "no" | "unclear";
+  offers_visa_sponsorship: "yes" | "no" | "unclear";
+}
+
+export type LiveVerdict = "strong_match" | "good_match" | "possible" | "weak_match";
+
+export interface LiveRankedCandidate {
+  candidate_id: string;
+  name: string;
+  verdict: LiveVerdict;
+  rationale: string;
+  flagged_for_review: boolean;
+}
+
+export interface LiveEliminatedCandidate {
+  candidate_id: string;
+  name: string;
+  reasons: string[];
+}
+
+export interface LiveRecommendResult {
+  job: { id: string; title: string; company: string };
+  coarse_brief: LiveCoarseBrief;
+  ranked: LiveRankedCandidate[];
+  eliminated: LiveEliminatedCandidate[];
+  candidates_considered: number;
+  candidates_passed_filter: number;
+}

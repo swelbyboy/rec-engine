@@ -1,4 +1,4 @@
-import type { CandidateRow, FeatureVector, FeedbackRecord, ModelStatus, RecommendResult, RetrainResult, StreamEvent } from "../types";
+import type { CandidateRow, FeatureVector, FeedbackRecord, LiveJobSummary, LiveRecommendResult, ModelStatus, RecommendResult, RetrainResult, StreamEvent } from "../types";
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
@@ -119,6 +119,25 @@ export async function uploadTrainingData(file: File): Promise<{ records_added: n
     throw new Error(body.detail ?? `HTTP ${res.status}`);
   }
   return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Live-data PoC pipeline
+// ---------------------------------------------------------------------------
+
+export async function fetchLiveJobs(): Promise<LiveJobSummary[]> {
+  return apiFetch<LiveJobSummary[]>("/live/jobs");
+}
+
+export async function runLiveRecommend(params: {
+  job_order_id: number;
+  candidate_limit?: number;
+  rerank_limit?: number;
+}): Promise<LiveRecommendResult> {
+  return apiFetch<LiveRecommendResult>("/live/recommend", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
 }
 
 export async function* recommendStream(params: {

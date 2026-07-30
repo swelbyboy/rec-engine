@@ -19,8 +19,9 @@ import CandidatesTable from "./components/CandidatesTable";
 import HirerPanel from "./components/HirerPanel";
 import ModelTrainingPanel from "./components/ModelTrainingPanel";
 import HowItWorksPanel from "./components/HowItWorksPanel";
+import LivePocPanel from "./components/LivePocPanel";
 
-type Tab = "recruiter" | "hirer" | "candidates" | "how-it-works";
+type Tab = "recruiter" | "hirer" | "candidates" | "how-it-works" | "live-poc";
 
 const STEPS: PipelineStepState[] = [
   { id: "parsing", label: "Parsing job description", status: "pending" },
@@ -238,7 +239,7 @@ export default function App() {
               <span className="text-sm font-semibold tracking-tight text-white">Recruiter</span>
             </div>
             <nav className="flex items-center gap-1">
-              {(["recruiter", "hirer", "candidates", "how-it-works"] as Tab[]).map((t) => (
+              {(["recruiter", "hirer", "candidates", "how-it-works", "live-poc"] as Tab[]).map((t) => (
                 <button
                   key={t}
                   onClick={() => setTab(t)}
@@ -248,7 +249,15 @@ export default function App() {
                     color: tab === t ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.35)",
                   }}
                 >
-                  {t === "recruiter" ? "Recruiter" : t === "hirer" ? "Hirer" : t === "candidates" ? "Candidates" : "How it works"}
+                  {t === "recruiter"
+                    ? "Recruiter"
+                    : t === "hirer"
+                    ? "Hirer"
+                    : t === "candidates"
+                    ? "Candidates"
+                    : t === "how-it-works"
+                    ? "How it works"
+                    : "Live PoC"}
                 </button>
               ))}
             </nav>
@@ -285,6 +294,18 @@ export default function App() {
             How it works
           </p>
           <HowItWorksPanel />
+        </main>
+      )}
+
+      {/* Live PoC tab — live Mothership data, constraint engine + coarse/fine LLM rerank */}
+      {tab === "live-poc" && (
+        <main className="flex-1 overflow-hidden mx-auto w-full max-w-screen-xl px-4 md:px-8 py-6 flex flex-col min-h-0">
+          <div
+            className="flex-1 flex flex-col rounded-xl border min-h-0 overflow-hidden"
+            style={{ background: "#111214", borderColor: "rgba(255,255,255,0.08)" }}
+          >
+            <LivePocPanel />
+          </div>
         </main>
       )}
 

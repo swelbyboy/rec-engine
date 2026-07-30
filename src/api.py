@@ -1125,6 +1125,44 @@ def model_status() -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Live-data PoC pipeline (separate from the synthetic-fixture pipeline above):
+# reads live candidates/jobs from Mothership's Supabase (via live_data.py) and
+# runs them through the constraint engine + coarse/fine LLM rerank funnel
+# (funnel_rerank.py), instead of the weighted-linear/ML scoring path used by
+# /recommend. See openspec/changes/live-matchmaking-poc.
+# ---------------------------------------------------------------------------
+@router.get("/live/jobs")
+def list_live_jobs() -> list[dict]:
+    from .live_data import fetch_open_job_orders
+    try:
+        return fetch_open_job_orders(limit=30)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch live job orders: {exc}") from exc
+
+
+class LiveRecommendRequest(BaseModel):
+    job_order_id: int
+    candidate_limit: int = 100
+    rerank_limit: int = 30
+
+
+@router.post("/live/recommend")
+def live_recommend(request: LiveRecommendRequest) -> JSONResponse:
+    from .funnel_rerank import run_live_pipeline
+    try:
+        result = run_live_pipeline(
+            request.job_order_id,
+            candidate_limit=request.candidate_limit,
+            rerank_limit=request.rerank_limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Live pipeline error: {exc}") from exc
+    return JSONResponse(content=result)
+
+
+# ---------------------------------------------------------------------------
 # Register /api router + serve built React SPA
 # ---------------------------------------------------------------------------
 app.include_router(router, prefix="/api")
