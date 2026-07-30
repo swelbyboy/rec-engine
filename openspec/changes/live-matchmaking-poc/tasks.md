@@ -28,11 +28,13 @@
 
 ## 5. Funnel Rerank
 
-- [ ] 5.1 Run live candidates (constraints built deterministically per Task 2.4, no LLM extraction needed) through the constraint engine (`constraint_engine.py`) unmodified, matched against live job constraints from Task 4
-- [ ] 5.2 Implement coarse LLM stage: extract role requirements/flexibility signals from the job's extracted data
-- [ ] 5.3 Implement fine-grained LLM rerank stage: rank the constraint-engine-filtered pool with per-candidate verdict + rationale, informed by the coarse stage
-- [ ] 5.4 Ensure `scoring.py` / `ml_scoring.py` are not invoked anywhere in this pipeline path
-- [ ] 5.5 Ensure eliminated candidates (failed hard constraints) are returned separately with elimination reasons intact
+- [x] 5.1 Run live candidates (constraints built deterministically per Task 2.4) through `constraint_engine.py` unmodified, matched against live job constraints from Task 4. Added one deterministic safety-net on top (not instead of) the generic engine: testing found the employer-side canonical_key for the UK-based/visa dimension drifts across separate extraction runs of the *same* job, and even near-identical phrasings scored under the semantic-match threshold — so the coarse stage (5.2) now also answers two targeted yes/no questions cross-checked directly against candidate data for this one high-value, high-frequency dimension
+- [x] 5.2 Implemented `coarse_role_brief()`: recruiter-facing summary + per-hard-constraint flexibility judgment + the two targeted location/visa questions above
+- [x] 5.3 Implemented `fine_rerank()`: single batched LLM call ranking the filtered pool with verdict (`strong_match`/`good_match`/`possible`/`weak_match`) + rationale per candidate
+- [x] 5.4 Confirmed — `scoring.py`/`ml_scoring.py` are not imported anywhere in `funnel_rerank.py`
+- [x] 5.5 Confirmed — `run_live_pipeline()` returns `eliminated` (with reasons) and `ranked` as separate lists
+
+Verified end-to-end against 2 real live roles (~55-60s for a 60-candidate pool each). Verdict ordering spot-checked by hand and looks sound, e.g. a junior full-stack engineer correctly demoted to `weak_match` for a senior cloud architect role despite passing all hard filters.
 
 ## 6. UI Wiring
 
