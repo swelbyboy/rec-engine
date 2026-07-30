@@ -34,7 +34,10 @@ There is no product-facing API for candidate/job data in Mothership today — Mi
 **4. Candidates sourced from `app.candidates` (the newer 89-col gold table), not `app.bullhorn_candidates` (what Mind currently reads).**
 `app.candidates` is available, hourly-refreshed, and wider than what Mind has adopted. Using it doesn't require Mind to change anything, and lets the PoC exercise the more complete data Mind hasn't yet moved to.
 
-**5. Credentials reused from Mind's `.env`, not freshly provisioned (except `OPENAI_API_KEY`).**
+**5. Candidate-side constraints built deterministically from `app.candidates`' typed fields, not via LLM extraction.**
+`app.candidates` already carries parsed, validated fields for exactly the things a candidate-side constraint needs: `salary_normalized`, `notice_days`, `working_model`, `requires_visa`/`visa_status_text`, and — notably — `deal_breakers` and `drivers`, which Mothership's own documentation describes as "hard constraints that would kill a match" and "what the candidate wants from the next move" respectively. Running rec-engine's LLM-based `extraction.py` over candidates' raw text would re-derive data Mothership has already parsed upstream, at LLM cost/latency, with no accuracy gain. `extraction.py` remains in use for **jobs** (Task 4), where the JD/briefing text genuinely is unstructured prose Mothership doesn't pre-parse. Live-tested: this correctly surfaces nuanced hard constraints (e.g. a 2-hour-commute cap implying ≤1 office day/week, exclusion of "AI-native / ChatGPT-wrapper" companies) that Mind's exact-match gates would be unlikely to capture.
+
+**6. Credentials reused from Mind's `.env`, not freshly provisioned (except `OPENAI_API_KEY`).**
 `ANTHROPIC_API_KEY`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY` were copied read-only from `wave-mind/mind/.env` into `wave-mind/rec-engine/.env` (gitignored, `chmod 600`). `OPENAI_API_KEY` did not exist in either Mind's or Mothership's env and was newly provisioned by the user.
 
 ## Risks / Trade-offs
