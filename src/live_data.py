@@ -138,7 +138,7 @@ def fetch_job_raw(job_order_id: int) -> dict:
 # ---------------------------------------------------------------------------
 
 _CANDIDATE_SELECT = ",".join([
-    "candidate_id", "first_name", "last_name", "location", "location_display",
+    "candidate_id", "first_name", "last_name", "location", "location_display", "is_uk", "is_london",
     "salary_normalized", "salary_currency", "salary_type", "notice_days", "notice_display",
     "working_model", "computed_years_exp", "current_title", "current_company",
     "computed_previous_companies", "computed_previous_titles", "computed_industries",
@@ -175,10 +175,36 @@ def _build_candidate_constraints(row: dict) -> list[Constraint]:
     if row.get("salary_normalized"):
         constraints.append(Constraint(
             id=f"{cid}-salary", type=ConstraintType.soft, side=ConstraintSide.candidate,
-            category="compensation", canonical_key="salary_minimum",
+            category="compensation", canonical_key="salary_min",
             description=f"Desired salary ~{row.get('salary_display') or row['salary_normalized']}",
             value=row["salary_normalized"], operator=ConstraintOperator.min,
             confidence=1.0, currency=row.get("salary_currency"),
+        ))
+
+    if row.get("location_display"):
+        constraints.append(Constraint(
+            id=f"{cid}-location", type=ConstraintType.soft, side=ConstraintSide.candidate,
+            category="location", canonical_key="candidate_location",
+            description=f"Based in {row['location_display']}",
+            value=row["location_display"], operator=ConstraintOperator.requires,
+            confidence=1.0,
+        ))
+
+    # Deterministic UK-based flag (Mothership's own is_uk classifier, not re-derived
+    # here) as a *separate*, plainly-phrased boolean constraint. "uk_based" is a
+    # canonical_key seen in practice from the JD extractor for UK-location
+    # requirements — giving this an exact-match shot at Phase 1, rather than relying
+    # solely on embedding similarity, which measured only ~0.34 between "Must be
+    # UK-based" and a free-text "Based in Miami, United States" description in
+    # testing — well under the 0.75 semantic-match threshold, so a real country
+    # mismatch was silently passing through as "no data, assume compatible."
+    if row.get("is_uk") is not None:
+        constraints.append(Constraint(
+            id=f"{cid}-uk-based", type=ConstraintType.soft, side=ConstraintSide.candidate,
+            category="location", canonical_key="uk_based",
+            description=f"UK-based: {'Yes' if row['is_uk'] else 'No'}",
+            value=bool(row["is_uk"]), operator=ConstraintOperator.requires,
+            confidence=1.0,
         ))
 
     if row.get("working_model") and row["working_model"] != "unknown":
