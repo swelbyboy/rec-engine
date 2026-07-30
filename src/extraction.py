@@ -402,7 +402,18 @@ MERGE_TOOL_SCHEMA = {
 # ---------------------------------------------------------------------------
 JD_SYSTEM_PROMPT = f"""You are an expert at extracting structured requirements and constraints from professional job postings.
 
-Extract all constraints from the job description accurately.
+Extract constraints that determine whether a candidate is compatible with this role:
+skills/qualifications, experience level, location/working arrangement, compensation the
+candidate would need to accept, notice/start timing, visa or right-to-work, education, and
+genuinely distinguishing culture/values signals.
+
+Standard company benefits and perks (health/life insurance, pension contributions, standard
+annual leave allowance, wellbeing programmes, cycle-to-work, referral schemes, GP access, and
+similar boilerplate) are NOT candidate-compatibility constraints — do not extract them, even
+when the source text states them plainly. The one exception: extract a benefit as a soft
+"prefers" constraint if it is unusual enough to be a genuine draw (e.g. above-market equity,
+uncapped leave) rather than routine.
+
 Mark constraints as "hard" only when the source text is explicit:
   words like "must", "required", "mandatory", "no exceptions", "will not".
 Use "soft" for preferences, desirables, and implicit signals.
@@ -547,8 +558,13 @@ def parse_job_description(raw_text: str, job_id: str = "", title: str = "", comp
 
     return JobDescription(
         id=job_id or str(uuid.uuid4())[:8],
-        title=result.get("title", title),
-        company=result.get("company", company),
+        # Prefer caller-supplied title/company (e.g. from a system of record) over the
+        # LLM's extraction — the tool schema requires both fields, so the model fills a
+        # placeholder like "<UNKNOWN>" when the source text doesn't restate them, and
+        # `result.get(key, default)` never falls through to `default` since the key is
+        # always present.
+        title=title or result.get("title", ""),
+        company=company or result.get("company", ""),
         raw_text=raw_text,
         required_skills=result.get("required_skills", []),
         preferred_skills=result.get("preferred_skills", []),
