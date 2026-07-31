@@ -2,6 +2,45 @@
 
 AI-powered candidate ranking system. Parses unstructured raw job descriptions and candidate documents (CV, LinkedIn, interview transcripts) through a pipeline, applies a constraint compatibility engine, and returns ranked, explainable candidate recommendations.
 
+## This branch (`poc/live-matchmaking`): quick start with real candidate data
+
+Everything below the next heading documents the original fixture-based PoC
+(30 hand-written candidates). This branch is different — it runs the same
+kind of pipeline against **real production candidates and job orders**, and
+adds a UI to compare its output against Mind's own live reranker. This
+section is the fastest path to running it locally; see [Live PoC
+branch](#live-poc-poclive-matchmaking-branch) further down for the full
+explanation of what's gitignored and why, and
+[`CHANGES_VS_MIND_MAIN.md`](CHANGES_VS_MIND_MAIN.md) for the architecture.
+
+```bash
+# 1. Install deps
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+# 2. Configure API keys + Supabase (this branch needs both, not just the two
+#    fixture-PoC keys — see .env.example for the full annotated list)
+cp .env.example .env
+# fill in: ANTHROPIC_API_KEY, OPENAI_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+
+# 3. Build the candidate embedding index — NOT committed (data/live_index/
+#    is gitignored, ~100MB of real-candidate-PII-derived .npz files), so
+#    every fresh clone has to generate its own from live Supabase data.
+#    First run embeds ~2,100 candidates via OpenAI — takes a few minutes and
+#    costs real (small) API spend; reruns are incremental and fast.
+python -m src.candidate_index build
+
+# 4. Run the API (terminal 1)
+uvicorn src.api:app --reload          # http://localhost:8000
+
+# 5. Run the UI (terminal 2)
+cd ui && npm install && npm run dev   # http://localhost:5173
+```
+
+Open `http://localhost:5173` — the **Live PoC** tab runs the live filtering
+funnel; the **Analysis** tab compares rec-engine's output against Mind's own
+production run for the same role.
+
 ## ML / data science concepts
 
 This PoC demonstrateds a real ML pipeline that can be extended, not a keyword filter or UI wrapper. The core concepts:
