@@ -183,6 +183,7 @@ _CANDIDATE_SELECT = ",".join([
     "certifications", "headline", "cv_summary", "skills", "title_families",
     "requires_visa", "visa_status_text", "prescreen_summary", "reason_for_leaving",
     "current_situation", "recruiter_assessment", "drivers", "deal_breakers", "tech_signals",
+    "linkedin_url",
 ])
 
 
@@ -192,6 +193,23 @@ def fetch_candidates_raw(candidate_ids: list[int] | None = None, limit: int = 20
         id_list = ",".join(str(i) for i in candidate_ids)
         params["candidate_id"] = f"in.({id_list})"
     return _get("candidates", "app", params)
+
+
+def fetch_cv_file_ref(candidate_id: int) -> dict | None:
+    """Bullhorn file id/name for a candidate's CV, from derived.cv_parsed.
+
+    On-demand, single-candidate lookup (not baked into candidate_index.py's
+    bulk build) — CV download is a per-candidate action a recruiter takes
+    while looking at one card, not a signal every one of ~17.6k candidates
+    needs precomputed. Returns None if the candidate has no CV on record.
+    """
+    rows = _get(
+        "cv_parsed", "derived",
+        {"select": "bullhorn_file_id,bullhorn_file_name", "candidate_id": f"eq.{candidate_id}", "limit": "1"},
+    )
+    if not rows or not rows[0].get("bullhorn_file_id"):
+        return None
+    return rows[0]
 
 
 def fetch_all_candidates_raw(page_size: int = 1000) -> list[dict]:
@@ -372,6 +390,7 @@ def candidate_row_to_model(row: dict) -> Candidate:
         culture_fit_score=0.5,
         constraints=_build_candidate_constraints(row),
         discipline=discipline,
+        linkedin_url=row.get("linkedin_url") or "",
     )
 
 

@@ -109,6 +109,31 @@ export default function LivePocPanel() {
           />
         </div>
 
+        {runs.length > 0 && (
+          <div className="relative">
+            <select
+              value={result?.run_id ?? ""}
+              onChange={(e) => handleSelectRun(e.target.value)}
+              disabled={loading}
+              className="appearance-none rounded-lg border pl-3 pr-8 py-2 text-xs font-medium outline-none disabled:opacity-50"
+              style={{ background: "#0b0c0d", borderColor: "rgba(255,255,255,0.12)", color: "white" }}
+            >
+              <option value="" disabled>
+                Run history ({runs.length})
+              </option>
+              {runs.map((r) => (
+                <option key={r.run_id} value={r.run_id}>
+                  {new Date(r.completed_at).toLocaleString()} — {r.candidates_reranked} ranked
+                </option>
+              ))}
+            </select>
+            <ChevronDown
+              className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2"
+              style={{ color: "rgba(255,255,255,0.4)" }}
+            />
+          </div>
+        )}
+
         <button
           onClick={handleRun}
           disabled={loading || selectedJobId == null}
@@ -181,9 +206,6 @@ export default function LivePocPanel() {
                 candidatesReranked: result.candidates_reranked,
                 eliminatedCount: result.eliminated.length,
               }}
-              runs={runs}
-              activeRunId={result.run_id}
-              onSelectRun={handleSelectRun}
             />
             <LiveCandidateList ranked={result.ranked} eliminated={result.eliminated} />
           </div>

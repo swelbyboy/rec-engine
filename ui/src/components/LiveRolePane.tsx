@@ -1,5 +1,4 @@
-import { ChevronDown } from "lucide-react";
-import type { LiveCoarseBrief, LiveRunSummary } from "../types";
+import type { LiveCoarseBrief } from "../types";
 
 const FLEX_STYLE: Record<string, { fg: string; label: string }> = {
   rigid: { fg: "rgba(255,255,255,0.4)", label: "Rigid" },
@@ -8,7 +7,7 @@ const FLEX_STYLE: Record<string, { fg: string; label: string }> = {
 };
 
 interface LiveRolePaneProps {
-  job: { id: string; title: string; company: string };
+  job: { id: string; title: string; company: string; required_skills: string[]; preferred_skills: string[] };
   coarseBrief: LiveCoarseBrief;
   stats: {
     candidatesConsidered: number;
@@ -17,49 +16,50 @@ interface LiveRolePaneProps {
     candidatesReranked: number;
     eliminatedCount: number;
   };
-  runs: LiveRunSummary[];
-  activeRunId: string | null;
-  onSelectRun: (runId: string) => void;
 }
 
-export default function LiveRolePane({ job, coarseBrief, stats, runs, activeRunId, onSelectRun }: LiveRolePaneProps) {
+export default function LiveRolePane({ job, coarseBrief, stats }: LiveRolePaneProps) {
+  // Persisted runs saved before required_skills/preferred_skills were added to
+  // the job payload won't have these fields — default so old runs still load
+  // instead of crashing (data/live_runs/*.json is old-code output, a real
+  // boundary the current code can't assume matches its own current shape).
+  const requiredSkills = job.required_skills ?? [];
+  const preferredSkills = job.preferred_skills ?? [];
+
   return (
     <div
       className="flex w-full flex-none flex-col gap-5 lg:w-[340px] lg:border-r lg:pr-5"
       style={{ borderColor: "rgba(255,255,255,0.08)" }}
     >
-      {runs.length > 1 && (
-        <div>
-          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.3)" }}>
-            Run history ({runs.length})
-          </p>
-          <div className="relative">
-            <select
-              value={activeRunId ?? ""}
-              onChange={(e) => onSelectRun(e.target.value)}
-              className="w-full appearance-none rounded-lg border pl-3 pr-8 py-2 text-xs font-medium outline-none"
-              style={{ background: "#0b0c0d", borderColor: "rgba(255,255,255,0.12)", color: "white" }}
-            >
-              {runs.map((r) => (
-                <option key={r.run_id} value={r.run_id}>
-                  {new Date(r.completed_at).toLocaleString()} — {r.candidates_reranked} ranked
-                </option>
-              ))}
-            </select>
-            <ChevronDown
-              className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2"
-              style={{ color: "rgba(255,255,255,0.4)" }}
-            />
-          </div>
-        </div>
-      )}
-
       <div>
         <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.3)" }}>
           {job.company}
         </p>
         <h2 className="text-lg font-semibold text-white">{job.title}</h2>
         <p className="mt-2 text-sm" style={{ color: "rgba(255,255,255,0.55)" }}>{coarseBrief.summary}</p>
+
+        {(requiredSkills.length > 0 || preferredSkills.length > 0) && (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {requiredSkills.map((s) => (
+              <span
+                key={`req-${s}`}
+                className="rounded px-2 py-0.5 text-[11px] font-medium"
+                style={{ background: "rgba(213,250,84,0.1)", color: "#d5fa54" }}
+              >
+                {s}
+              </span>
+            ))}
+            {preferredSkills.map((s) => (
+              <span
+                key={`pref-${s}`}
+                className="rounded px-2 py-0.5 text-[11px]"
+                style={{ background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.45)" }}
+              >
+                {s}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-2 text-[11px]" style={{ color: "rgba(255,255,255,0.4)" }}>

@@ -13,7 +13,7 @@ import asyncio
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -1188,6 +1188,34 @@ def get_live_run(run_id: str) -> JSONResponse:
     if result is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
     return JSONResponse(content=result)
+
+
+@router.get("/live/candidates/{candidate_id}/cv")
+def download_candidate_cv(candidate_id: int) -> Response:
+    """Proxy a candidate's CV file straight from Bullhorn.
+
+    Requires BULLHORN_CLIENT_ID/CLIENT_SECRET/API_USERNAME/API_PASSWORD (same
+    values Mind uses) — without them, or if this server's IP isn't on
+    Bullhorn's allowlist (see bullhorn_client.py docstring), this 502s with a
+    message explaining why, rather than a bare stack trace.
+    """
+    from . import bullhorn_client, live_data
+
+    ref = live_data.fetch_cv_file_ref(candidate_id)
+    if ref is None:
+        raise HTTPException(status_code=404, detail="No CV file on record for this candidate")
+
+    try:
+        content, content_type = bullhorn_client.fetch_file("Candidate", candidate_id, ref["bullhorn_file_id"])
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Bullhorn file fetch failed: {exc}") from exc
+
+    filename = ref.get("bullhorn_file_name") or f"cv-{candidate_id}"
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/live/index/refresh")

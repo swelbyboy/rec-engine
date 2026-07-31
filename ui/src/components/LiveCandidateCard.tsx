@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { ChevronDown, ChevronUp, FileDown, Linkedin, Loader2 } from "lucide-react";
 import type { LiveRankedCandidate, LiveVerdict } from "../types";
 
 const VERDICT_STYLE: Record<LiveVerdict, { bg: string; fg: string; label: string }> = {
@@ -19,8 +21,84 @@ export function VerdictBadge({ verdict }: { verdict: LiveVerdict }) {
   );
 }
 
+function ExpandableSection({ label, text }: { label: string; text: string | undefined }) {
+  const [open, setOpen] = useState(false);
+  if (!text?.trim()) return null;
+  return (
+    <div className="mt-2">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide transition-colors"
+        style={{ color: "rgba(255,255,255,0.35)" }}
+      >
+        {open ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+        {label}
+      </button>
+      {open && (
+        <p className="mt-1 whitespace-pre-line text-[11px]" style={{ color: "rgba(255,255,255,0.45)" }}>
+          {text}
+        </p>
+      )}
+    </div>
+  );
+}
+
+type DownloadState = "idle" | "loading" | "error";
+
+function DownloadCvButton({ bullhornId }: { bullhornId: string }) {
+  const [state, setState] = useState<DownloadState>("idle");
+
+  async function handleDownload() {
+    setState("loading");
+    try {
+      const res = await fetch(`/api/live/candidates/${bullhornId}/cv`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(body.detail ?? `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const disposition = res.headers.get("content-disposition") ?? "";
+      const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
+      const filename = filenameMatch?.[1] ?? `cv-${bullhornId}`;
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      setState("idle");
+    } catch {
+      setState("error");
+      setTimeout(() => setState("idle"), 4000);
+    }
+  }
+
+  return (
+    <button
+      onClick={handleDownload}
+      disabled={state === "loading"}
+      className="flex items-center gap-1 underline underline-offset-2 disabled:opacity-60"
+      style={{ color: state === "error" ? "#f87171" : "#8ea1ff" }}
+    >
+      {state === "loading" ? (
+        <Loader2 className="h-3 w-3 animate-spin" />
+      ) : (
+        <FileDown className="h-3 w-3" />
+      )}
+      {state === "error" ? "CV unavailable" : "Download CV"}
+    </button>
+  );
+}
+
 export default function LiveCandidateCard({ candidate, rank }: { candidate: LiveRankedCandidate; rank: number }) {
   const c = candidate;
+  // Older persisted runs predate matched_skills/missing_required_skills/
+  // bullhorn_id/linkedin_url/cv_summary/call_notes — default so they still
+  // render instead of crashing (see LiveRolePane for the same reasoning).
+  const matchedSkills = c.matched_skills ?? [];
+  const missingSkills = c.missing_required_skills ?? [];
+  const bullhornId = c.bullhorn_id ?? "";
   return (
     <div className="rounded-lg border p-3" style={{ borderColor: "rgba(255,255,255,0.08)", background: "#111214" }}>
       <div className="flex items-center justify-between gap-2">
@@ -42,26 +120,27 @@ export default function LiveCandidateCard({ candidate, rank }: { candidate: Live
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]" style={{ color: "rgba(255,255,255,0.4)" }}>
         <span>{c.years_experience} yrs experience</span>
         <span className="capitalize">{c.seniority_level}</span>
-        {c.bullhorn_url ? (
+        {bullhornId && <span>BH #{bullhornId}</span>}
+        {c.linkedin_url && (
           <a
-            href={c.bullhorn_url}
+            href={c.linkedin_url}
             target="_blank"
             rel="noreferrer"
-            className="underline underline-offset-2"
+            className="flex items-center gap-1 underline underline-offset-2"
             style={{ color: "#8ea1ff" }}
           >
-            BH #{c.bullhorn_id}
+            <Linkedin className="h-3 w-3" />
+            LinkedIn
           </a>
-        ) : (
-          <span>BH #{c.bullhorn_id}</span>
         )}
+        {bullhornId && <DownloadCvButton bullhornId={bullhornId} />}
       </div>
 
       <p className="mt-1.5 text-xs" style={{ color: "rgba(255,255,255,0.5)" }}>{c.rationale}</p>
 
-      {(c.matched_skills.length > 0 || c.missing_required_skills.length > 0) && (
+      {(matchedSkills.length > 0 || missingSkills.length > 0) && (
         <div className="mt-2 flex flex-wrap gap-1">
-          {c.matched_skills.map((s) => (
+          {matchedSkills.map((s) => (
             <span
               key={`matched-${s}`}
               className="rounded px-1.5 py-0.5 text-[10px]"
@@ -70,7 +149,7 @@ export default function LiveCandidateCard({ candidate, rank }: { candidate: Live
               {s}
             </span>
           ))}
-          {c.missing_required_skills.map((s) => (
+          {missingSkills.map((s) => (
             <span
               key={`missing-${s}`}
               className="rounded px-1.5 py-0.5 text-[10px] line-through"
@@ -81,6 +160,9 @@ export default function LiveCandidateCard({ candidate, rank }: { candidate: Live
           ))}
         </div>
       )}
+
+      <ExpandableSection label="CV summary" text={c.cv_summary} />
+      <ExpandableSection label="Call notes" text={c.call_notes} />
     </div>
   );
 }

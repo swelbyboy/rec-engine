@@ -722,22 +722,6 @@ def _apply_location_visa_check(
     return still_passed, newly_eliminated
 
 
-def _bullhorn_url(candidate_id: str) -> str:
-    """Deep-link to a candidate's record in Bullhorn, or "" if not configured.
-
-    candidate_id is already the real Bullhorn candidate id (see
-    _apply_title_relevance_check's neighbourhood — confirmed by cross-checking
-    app.candidates.candidate_id against app.bullhorn_candidates.id for the
-    same person). URL pattern mirrors Mind's own
-    apps/web/src/lib/bullhorn/rejection-collector.ts, which degrades to no
-    link the same way when its tenant URL isn't configured.
-    """
-    tenant = os.environ.get("BULLHORN_TENANT_URL", "").rstrip("/")
-    if not tenant:
-        return ""
-    return f"{tenant}/BullhornSTAFFING/OpenWindow.cfm?Entity=Candidate&id={candidate_id}&view=Overview"
-
-
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
@@ -850,14 +834,25 @@ def run_live_pipeline(job_order_id: int, candidate_limit: int | None = None, rer
             "years_experience": c.years_experience,
             "seniority_level": c.seniority_level,
             # candidate_id is already the real Bullhorn candidate id (confirmed
-            # against app.bullhorn_candidates) — bullhorn_id/bullhorn_url are
-            # explicit, UI-facing names for the same value rather than a new field.
+            # against app.bullhorn_candidates) — bullhorn_id is an explicit,
+            # UI-facing name for the same value. No direct "open in Bullhorn"
+            # link (removed — Bullhorn's own OpenWindow.cfm page is too slow
+            # to be worth it); GET /api/live/candidates/{id}/cv is the one
+            # thing that actually calls Bullhorn's API, for CV download.
             "bullhorn_id": c.id,
-            "bullhorn_url": _bullhorn_url(c.id),
+            "linkedin_url": c.linkedin_url,
+            "cv_summary": c.raw_cv,
+            "call_notes": c.raw_interview_transcript,
         })
 
     return {
-        "job": {"id": job.id, "title": job.title, "company": job.company},
+        "job": {
+            "id": job.id,
+            "title": job.title,
+            "company": job.company,
+            "required_skills": job.required_skills,
+            "preferred_skills": job.preferred_skills,
+        },
         "coarse_brief": coarse,
         "ranked": ranked,
         "eliminated": [

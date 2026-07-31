@@ -18,7 +18,6 @@ from src.funnel_rerank import (
     TITLE_RELEVANCE_FLOOR,
     _apply_skill_floor_check,
     _apply_title_relevance_check,
-    _bullhorn_url,
     _merge_ranked_batches,
     fine_rerank,
     select_by_coarse_bucket,
@@ -305,35 +304,6 @@ def test_title_relevance_floor_is_lenient():
     """Sanity check the constant itself stays in the 'lenient' range the plan
     calls for — should catch extreme mismatches only, not adjacent disciplines."""
     assert 0.0 < TITLE_RELEVANCE_FLOOR <= 0.4
-
-
-# ---------------------------------------------------------------------------
-# _bullhorn_url — pure logic, no API calls
-# ---------------------------------------------------------------------------
-def test_bullhorn_url_built_when_tenant_configured(monkeypatch):
-    monkeypatch.setenv("BULLHORN_TENANT_URL", "https://cls20.bullhornstaffing.com")
-
-    url = _bullhorn_url("11128")
-
-    assert url == (
-        "https://cls20.bullhornstaffing.com/BullhornSTAFFING/OpenWindow.cfm"
-        "?Entity=Candidate&id=11128&view=Overview"
-    )
-
-
-def test_bullhorn_url_strips_trailing_slash(monkeypatch):
-    monkeypatch.setenv("BULLHORN_TENANT_URL", "https://cls20.bullhornstaffing.com/")
-
-    url = _bullhorn_url("11128")
-
-    assert "//BullhornSTAFFING" not in url
-    assert url.startswith("https://cls20.bullhornstaffing.com/BullhornSTAFFING")
-
-
-def test_bullhorn_url_empty_when_tenant_not_configured(monkeypatch):
-    monkeypatch.delenv("BULLHORN_TENANT_URL", raising=False)
-
-    assert _bullhorn_url("11128") == ""
 
 
 # ---------------------------------------------------------------------------

@@ -221,9 +221,14 @@ export interface LiveRankedCandidate {
   missing_required_skills: string[];
   years_experience: number;
   seniority_level: string;
+  /** Plain text, not a link — Bullhorn's own record page (OpenWindow.cfm) was too slow to be worth linking to. */
   bullhorn_id: string;
-  /** "" when BULLHORN_TENANT_URL isn't configured server-side — render the id as plain text, not a link. */
-  bullhorn_url: string;
+  /** "" when the candidate has no LinkedIn URL on record. */
+  linkedin_url: string;
+  /** Parsed CV text (headline + summary + certifications) — shown inline; use GET /api/live/candidates/{bullhorn_id}/cv for the actual file. */
+  cv_summary: string;
+  /** Recruiter call/prescreen notes (prescreen summary, current situation, reason for leaving, recruiter assessment, tech signals discussed). */
+  call_notes: string;
 }
 
 export interface LiveEliminatedCandidate {
@@ -234,7 +239,7 @@ export interface LiveEliminatedCandidate {
 
 export interface LiveRecommendResult {
   run_id: string;
-  job: { id: string; title: string; company: string };
+  job: { id: string; title: string; company: string; required_skills: string[]; preferred_skills: string[] };
   coarse_brief: LiveCoarseBrief;
   ranked: LiveRankedCandidate[];
   eliminated: LiveEliminatedCandidate[];
