@@ -1218,6 +1218,67 @@ def download_candidate_cv(candidate_id: int) -> Response:
     )
 
 
+@router.get("/mind/runs")
+def list_mind_runs(role_id: int) -> list[dict]:
+    """Mind's own past rerank run summaries for a role, newest-first — powers the Compare tab's Mind run-pickers."""
+    from . import mind_run_store
+    return mind_run_store.list_runs(role_id)
+
+
+@router.get("/mind/runs/{run_id}")
+def get_mind_run(run_id: str) -> JSONResponse:
+    """One Mind run's metadata + full candidate list, same shape as `mind_run_store.get_run`."""
+    from . import mind_run_store
+    result = mind_run_store.get_run(run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Mind run '{run_id}' not found")
+    return JSONResponse(content=result)
+
+
+class LlmOnlyRecommendRequest(BaseModel):
+    job_order_id: int
+    # See run_live_pipeline's candidate_limit — same dev/testing-only cap.
+    candidate_limit: int | None = None
+
+
+@router.post("/llm-only/recommend")
+def llm_only_recommend(request: LlmOnlyRecommendRequest) -> JSONResponse:
+    """Full-Sonnet comparison variant — see funnel_rerank.run_llm_only_pipeline
+    for what it skips relative to /live/recommend. Same response shape, same
+    error mapping, own run store (llm_only_run_store) so results don't mix
+    with the regular PoC pipeline's runs for the same role."""
+    from . import llm_only_run_store
+    from .funnel_rerank import run_llm_only_pipeline
+    try:
+        result = run_llm_only_pipeline(request.job_order_id, candidate_limit=request.candidate_limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"LLM-only pipeline error: {exc}") from exc
+
+    llm_only_run_store.save_run(request.job_order_id, result)
+    return JSONResponse(content=result)
+
+
+@router.get("/llm-only/runs")
+def list_llm_only_runs(job_order_id: int) -> list[dict]:
+    """Past LLM-only run summaries for a job, newest-first."""
+    from . import llm_only_run_store
+    return llm_only_run_store.list_runs(job_order_id)
+
+
+@router.get("/llm-only/runs/{run_id}")
+def get_llm_only_run(run_id: str) -> JSONResponse:
+    """Full result for one past LLM-only run — same shape /llm-only/recommend returns."""
+    from . import llm_only_run_store
+    result = llm_only_run_store.get_run(run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    return JSONResponse(content=result)
+
+
 @router.post("/live/index/refresh")
 def refresh_live_index() -> dict:
     """Drop the in-process cached candidate index.

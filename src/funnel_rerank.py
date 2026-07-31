@@ -14,6 +14,7 @@ from this coarse-then-fine LLM funnel.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import threading
@@ -64,6 +65,8 @@ def _call_tool(
     model: str = LLM_MODEL,
     cache_system: bool = False,
     retries: int = 1,
+    postprocess=None,
+    validate=None,
 ) -> dict:
     """Single tool-forced LLM call, with an optional retry for transient errors.
 
@@ -72,6 +75,26 @@ def _call_tool(
     static) system prompt, e.g. chunked fine-rerank/triage; not worth the
     extra request shape for a stage that only ever makes one call per run
     (e.g. the coarse role brief).
+
+    No `temperature` param (2026-07-31): claude-sonnet-5 (FINE_RERANK_MODEL)
+    — like the rest of the Sonnet 5 / Opus 5 / Fable 5 / 4.7 / 4.8 family —
+    rejects ANY non-default temperature/top_p/top_k with a 400 ("temperature
+    is deprecated for this model"), so it isn't available as a lever here.
+    (Originally added to fight what looked like degenerate output on large
+    batches; root-caused 2026-07-31 to a JSON-shape quirk instead — see
+    `postprocess` below — so it wasn't the right lever anyway.)
+
+    postprocess, if given, is called with the parsed tool_use input and may
+    return a corrected version — applied before `validate`, so a structural
+    fix (e.g. un-stringifying a field the model serialized as JSON text
+    instead of a native array/object) counts as success rather than
+    triggering a retry.
+
+    validate, if given, is called with the (possibly postprocessed) input and
+    should raise on a response that's still wrong (e.g. a ranked array
+    wildly larger than the batch it was asked to rank) — routed through the
+    same retry loop as a real API error, since a structurally-valid-but-wrong
+    response wouldn't otherwise trigger the except-based retry at all.
     """
     system_param = (
         [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
@@ -92,7 +115,10 @@ def _call_tool(
             )
             for block in response.content:
                 if block.type == "tool_use":
-                    return block.input
+                    result = postprocess(block.input) if postprocess is not None else block.input
+                    if validate is not None:
+                        validate(result)
+                    return result
             raise RuntimeError("No tool use block in response")
         except Exception:
             if attempt >= retries:
@@ -100,6 +126,53 @@ def _call_tool(
             attempt += 1
             print(f"    [LLM] call failed, retrying ({attempt}/{retries})...", flush=True)
             time.sleep(1.5)
+
+
+def _coerce_stringified_json(field: str):
+    """Returns a postprocess fn that un-stringifies `field` if the model
+    serialized it as JSON text instead of returning it as a native
+    array/object in the tool call.
+
+    Root-caused 2026-07-31 by capturing raw tool_use output for chunks that
+    were falling back to "not returned by the rerank stage": the model was
+    NOT generating garbage (no degenerate repetition, no runaway token
+    spend) — it was producing well-reasoned, correctly-shaped rankings, just
+    occasionally handing back `{"ranked": "[{...}, {...}]"}` (the array as a
+    JSON string) instead of `{"ranked": [{...}, {...}]}`, and once even
+    double-wrapped: `{"ranked": "{\\"ranked\\": [...]}"}`. Good data was being
+    discarded as if it were noise. Handles both shapes; leaves the input
+    alone (for `validate` to catch) if `field` isn't a string, or is a string
+    that isn't parseable JSON even leniently.
+
+    The stringified form isn't always strictly valid JSON either — one
+    captured case had a stray trailing comma before a closing brace
+    (`..."fit.",\n},\n{"candidate_id": ...` — plausible since a manually
+    composed string, unlike a properly tool-encoded array, gets none of the
+    structured-output generator's syntax guarantees). Falls back to a
+    trailing-comma-stripped reparse before giving up.
+    """
+
+    def _parse_lenient(text: str):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return json.loads(re.sub(r",(\s*[}\]])", r"\1", text))
+
+    def _coerce(parsed: dict) -> dict:
+        value = parsed.get(field)
+        if not isinstance(value, str):
+            return parsed
+        try:
+            decoded = _parse_lenient(value)
+        except (json.JSONDecodeError, TypeError):
+            return parsed
+        if isinstance(decoded, list):
+            return {**parsed, field: decoded}
+        if isinstance(decoded, dict) and isinstance(decoded.get(field), list):
+            return {**parsed, field: decoded[field]}
+        return parsed
+
+    return _coerce
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +344,15 @@ def _chunk(items: list, size: int) -> list[list]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
-RERANK_BATCH_SIZE = 40  # candidates per fine-rerank call — reused from the prior single-call default
+# candidates per fine-rerank call. Must satisfy 1024 + 220*N <= 8192 (the max_tokens
+# formula in _fine_rerank_chunk) or the model's output gets clipped by that hard cap
+# mid-batch — verified 2026-07-31: the previous value of 40 was silently truncating
+# every full batch's tool-use JSON, dropping candidates into _merge_ranked_batches'
+# "not returned by the rerank stage" fallback at rates from 21% up to 100% depending
+# on how verbose that batch's rationales happened to be. 32 is the exact ceiling the
+# formula supports (was already documented as the safe number in fine_rerank()'s own
+# docstring, just never matched by this constant).
+RERANK_BATCH_SIZE = 32
 
 
 def _fine_rerank_chunk(
@@ -305,15 +386,44 @@ Candidates to rank ({len(pool)} total, all already passed hard-constraint filter
 
 {candidate_blocks}"""
 
-    result = _call_tool(
-        [{"role": "user", "content": prompt}],
-        FINE_RERANK_TOOL_SCHEMA,
-        FINE_RERANK_SYSTEM,
-        max_tokens=min(1024 + 220 * len(pool), 8192),
-        model=FINE_RERANK_MODEL,
-        cache_system=True,
-        retries=1,
-    )
+    def _validate_ranked(parsed: dict) -> None:
+        ranked = parsed.get("ranked")
+        # Generous tolerance (2x) — a real pathological response (thousands
+        # of entries for a 32-candidate batch) would still trip this; the
+        # much more common case — the array serialized as a JSON string
+        # instead of natively — is already fixed by _coerce_stringified_json
+        # (passed as postprocess) before this ever runs.
+        if not isinstance(ranked, list) or len(ranked) > len(pool) * 2:
+            got = len(ranked) if isinstance(ranked, list) else type(ranked).__name__
+            raise ValueError(
+                f"fine-rerank returned {got} items for a {len(pool)}-candidate batch "
+                "— not a usable ranking even after JSON-string coercion"
+            )
+
+    try:
+        result = _call_tool(
+            [{"role": "user", "content": prompt}],
+            FINE_RERANK_TOOL_SCHEMA,
+            FINE_RERANK_SYSTEM,
+            max_tokens=min(1024 + 220 * len(pool), 8192),
+            model=FINE_RERANK_MODEL,
+            cache_system=True,
+            retries=3,
+            postprocess=_coerce_stringified_json("ranked"),
+            validate=_validate_ranked,
+        )
+    except Exception as exc:
+        # Exhausted retries on a genuinely stubborn batch (seen in practice:
+        # `ranked` comes back as a bare string instead of an array, or with
+        # thousands of repeated entries — a model-side hiccup on this
+        # particular batch's content, not a systemic failure). Degrade this
+        # ONE chunk to empty rather than crashing the whole run — the caller
+        # (fine_rerank -> _merge_ranked_batches) already has a designed path
+        # for "candidate present in pool but missing from every chunk's
+        # ranked list": it appends them flagged for manual review instead of
+        # vanishing or taking every other chunk's real results down too.
+        print(f"    [LLM] fine-rerank chunk failed after retries, degrading to empty: {exc}", flush=True)
+        return []
     return result.get("ranked", [])
 
 
@@ -374,17 +484,28 @@ def fine_rerank(
     candidates: list[Candidate],
     compatibility_results: dict[str, CompatibilityResult],
     max_candidates: int | None = None,
+    max_workers: int = 1,
 ) -> list[dict]:
     """Stage 2: rank the constraint-filtered pool with verdict + rationale.
 
     Chunks the pool into fixed-size batches (RERANK_BATCH_SIZE) and calls the
-    fine-rerank LLM once per chunk, serially — not one big call. A single call
-    scaling its max_tokens with pool size hits Anthropic's output ceiling
-    around ~32 candidates; Mind's own production rerank
-    (mind/apps/web/src/lib/reranks/rerank-anthropic.ts) solves this the same
-    way: fixed batch size + serial calls (concurrent long-lived streams were
-    found to starve the event loop in production) + a merge step, not a
-    bigger single call.
+    fine-rerank LLM once per chunk. A single call scaling its max_tokens with
+    pool size hits Anthropic's output ceiling around ~32 candidates; Mind's
+    own production rerank (mind/apps/web/src/lib/reranks/rerank-anthropic.ts)
+    solves this the same way: fixed batch size + a merge step, not a bigger
+    single call.
+
+    `max_workers` (2026-08-01): default 1 keeps chunks serial, same as
+    always — that default came from Mind's own reranker finding concurrent
+    long-lived streams starved the event loop in *its* production (Node.js).
+    That constraint doesn't transfer to this Python/FastAPI service, and it
+    matters here: the normal pipeline narrows to a small rerank pool before
+    this stage (a handful of chunks), but the LLM-only pipeline
+    (run_llm_only_pipeline) skips that narrowing entirely and can be dozens
+    of chunks — serial there means well over an hour per role. Pass
+    max_workers > 1 to run chunks concurrently via ThreadPoolExecutor;
+    `_merge_ranked_batches` merges by candidate_id and sorts by verdict, so
+    completion order never affects the result.
 
     `max_candidates`, if given, still caps the pool size handled here (dev/
     testing convenience); the real ceiling on how many candidates reach this
@@ -405,10 +526,19 @@ def fine_rerank(
     skill_coverage_by_id = {c.id: len(skill_detail.get(c.id, ([], []))[0]) for c in pool}
 
     chunks = _chunk(pool, RERANK_BATCH_SIZE)
-    batches = [
-        _fine_rerank_chunk(job, coarse_brief, chunk, compatibility_results, skill_detail)
-        for chunk in chunks
-    ]
+    if max_workers > 1 and len(chunks) > 1:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool_executor:
+            batches = list(
+                pool_executor.map(
+                    lambda chunk: _fine_rerank_chunk(job, coarse_brief, chunk, compatibility_results, skill_detail),
+                    chunks,
+                )
+            )
+    else:
+        batches = [
+            _fine_rerank_chunk(job, coarse_brief, chunk, compatibility_results, skill_detail)
+            for chunk in chunks
+        ]
 
     merged = _merge_ranked_batches(batches, pool, skill_coverage_by_id)
 
@@ -863,4 +993,99 @@ def run_live_pipeline(job_order_id: int, candidate_limit: int | None = None, rer
         "candidates_indexed": len(index),
         "candidates_passed_filter": len(passed),
         "candidates_reranked": len(rerank_pool),
+    }
+
+
+LLM_ONLY_MAX_WORKERS = 8
+
+
+def run_llm_only_pipeline(job_order_id: int, candidate_limit: int | None = None) -> dict:
+    """Full-Sonnet comparison variant: the eligible candidate pool straight to
+    fine_rerank, none of run_live_pipeline's prefiltering or coarse LLM call.
+
+    Deliberately skips, relative to run_live_pipeline:
+    - constraint_engine.run_constraint_engine (hard-constraint filtering)
+    - _apply_skill_floor_check / _apply_title_relevance_check / _apply_location_visa_check
+    - coarse_role_brief (the coarse LLM framing call)
+    - the Haiku triage_candidates bucketing
+    - the embedding-similarity top-K trim
+
+    Every candidate in the index (already gated to Mind's eligible pool at
+    fetch time — see live_data._ELIGIBILITY_FILTER — this pipeline doesn't
+    re-widen that) goes straight into fine_rerank. compatibility_results is
+    built as an unfiltered stub (eliminated=False, no constraint_matches) so
+    _format_candidate_block still renders — with an honest "(no employer
+    constraints extracted)" line — without needing the constraint engine to
+    have actually run. coarse_brief is `{}`, so the prompt's "Role briefing:"
+    line is blank rather than fabricated.
+
+    Runs fine_rerank with LLM_ONLY_MAX_WORKERS-way concurrency — at
+    RERANK_BATCH_SIZE=32, a ~2,100-candidate eligible pool is ~67 chunks;
+    serial (the default everywhere else) would take well over an hour per
+    role. See fine_rerank's max_workers docstring for why concurrency is
+    safe for this service specifically (it isn't a blanket recommendation —
+    Mind's own reranker measured the opposite in Node.js).
+
+    Returns the exact same shape as run_live_pipeline (job/coarse_brief/
+    ranked/eliminated/candidates_considered/candidates_indexed/
+    candidates_passed_filter/candidates_reranked) so it's a drop-in for
+    llm_only_run_store and the existing LiveRecommendResult UI types —
+    `eliminated` is always [] here (nothing was filtered) and
+    candidates_considered/candidates_indexed/candidates_passed_filter/
+    candidates_reranked are all the same number (the full pool).
+    """
+    from . import candidate_index, live_data
+    from .extraction import parse_job_description
+
+    job_raw = live_data.fetch_job_raw(job_order_id)
+    job = parse_job_description(
+        job_raw["raw_text"], job_id=job_raw["id"], title=job_raw["title"], company=job_raw["company"]
+    )
+
+    index = candidate_index.get_cached()
+    pool = index.all_candidates()
+    if candidate_limit is not None:
+        pool = pool[:candidate_limit]
+
+    compat_by_id = {c.id: CompatibilityResult(candidate_id=c.id, eliminated=False) for c in pool}
+
+    ranked_raw = fine_rerank(job, {}, pool, compat_by_id, max_workers=LLM_ONLY_MAX_WORKERS)
+
+    candidates_by_id = {c.id: c for c in pool}
+    ranked = []
+    for item in ranked_raw:
+        c = candidates_by_id.get(item["candidate_id"])
+        if c is None:
+            continue
+        ranked.append({
+            "candidate_id": c.id,
+            "name": c.name,
+            "verdict": item["verdict"],
+            "rationale": item["rationale"],
+            "flagged_for_review": False,
+            "matched_skills": item.get("matched_skills", []),
+            "missing_required_skills": item.get("missing_required_skills", []),
+            "years_experience": c.years_experience,
+            "seniority_level": c.seniority_level,
+            "bullhorn_id": c.id,
+            "linkedin_url": c.linkedin_url,
+            "cv_summary": c.raw_cv,
+            "call_notes": c.raw_interview_transcript,
+        })
+
+    return {
+        "job": {
+            "id": job.id,
+            "title": job.title,
+            "company": job.company,
+            "required_skills": job.required_skills,
+            "preferred_skills": job.preferred_skills,
+        },
+        "coarse_brief": {},
+        "ranked": ranked,
+        "eliminated": [],
+        "candidates_considered": len(pool),
+        "candidates_indexed": len(pool),
+        "candidates_passed_filter": len(pool),
+        "candidates_reranked": len(pool),
     }

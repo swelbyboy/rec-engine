@@ -21,13 +21,16 @@ export function VerdictBadge({ verdict }: { verdict: LiveVerdict }) {
   );
 }
 
-function ExpandableSection({ label, text }: { label: string; text: string | undefined }) {
+export function ExpandableSection({ label, text }: { label: string; text: string | undefined }) {
   const [open, setOpen] = useState(false);
   if (!text?.trim()) return null;
   return (
     <div className="mt-2">
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
         className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide transition-colors"
         style={{ color: "rgba(255,255,255,0.35)" }}
       >
@@ -45,7 +48,7 @@ function ExpandableSection({ label, text }: { label: string; text: string | unde
 
 type DownloadState = "idle" | "loading" | "error";
 
-function DownloadCvButton({ bullhornId }: { bullhornId: string }) {
+export function DownloadCvButton({ bullhornId }: { bullhornId: string }) {
   const [state, setState] = useState<DownloadState>("idle");
 
   async function handleDownload() {
@@ -76,7 +79,10 @@ function DownloadCvButton({ bullhornId }: { bullhornId: string }) {
 
   return (
     <button
-      onClick={handleDownload}
+      onClick={(e) => {
+        e.stopPropagation();
+        handleDownload();
+      }}
       disabled={state === "loading"}
       className="flex items-center gap-1 underline underline-offset-2 disabled:opacity-60"
       style={{ color: state === "error" ? "#f87171" : "#8ea1ff" }}
@@ -91,7 +97,15 @@ function DownloadCvButton({ bullhornId }: { bullhornId: string }) {
   );
 }
 
-export default function LiveCandidateCard({ candidate, rank }: { candidate: LiveRankedCandidate; rank: number }) {
+export default function LiveCandidateCard({
+  candidate,
+  rank,
+  onClick,
+}: {
+  candidate: LiveRankedCandidate;
+  rank: number;
+  onClick?: (candidateId: string, candidateName: string) => void;
+}) {
   const c = candidate;
   // Older persisted runs predate matched_skills/missing_required_skills/
   // bullhorn_id/linkedin_url/cv_summary/call_notes — default so they still
@@ -100,7 +114,15 @@ export default function LiveCandidateCard({ candidate, rank }: { candidate: Live
   const missingSkills = c.missing_required_skills ?? [];
   const bullhornId = c.bullhorn_id ?? "";
   return (
-    <div className="rounded-lg border p-3" style={{ borderColor: "rgba(255,255,255,0.08)", background: "#111214" }}>
+    <div
+      className="rounded-lg border p-3"
+      style={{
+        borderColor: "rgba(255,255,255,0.08)",
+        background: "#111214",
+        cursor: onClick ? "pointer" : undefined,
+      }}
+      onClick={onClick ? () => onClick(c.candidate_id, c.name) : undefined}
+    >
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <span className="text-xs font-mono" style={{ color: "rgba(255,255,255,0.25)" }}>#{rank}</span>
@@ -126,6 +148,7 @@ export default function LiveCandidateCard({ candidate, rank }: { candidate: Live
             href={c.linkedin_url}
             target="_blank"
             rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
             className="flex items-center gap-1 underline underline-offset-2"
             style={{ color: "#8ea1ff" }}
           >

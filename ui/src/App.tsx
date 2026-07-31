@@ -20,8 +20,10 @@ import HirerPanel from "./components/HirerPanel";
 import ModelTrainingPanel from "./components/ModelTrainingPanel";
 import HowItWorksPanel from "./components/HowItWorksPanel";
 import LivePocPanel from "./components/LivePocPanel";
+import ComparePanel from "./components/ComparePanel";
+import AnalysisPanel from "./components/AnalysisPanel";
 
-type Tab = "recruiter" | "hirer" | "candidates" | "how-it-works" | "live-poc";
+type Tab = "recruiter" | "hirer" | "candidates" | "how-it-works" | "live-poc" | "compare" | "analysis";
 
 const STEPS: PipelineStepState[] = [
   { id: "parsing", label: "Parsing job description", status: "pending" },
@@ -239,8 +241,8 @@ export default function App() {
               <span className="text-sm font-semibold tracking-tight text-white">Recruiter</span>
             </div>
             <nav className="flex items-center gap-1">
-              {/* Other tabs hidden on this branch — Live PoC is the only thing being tested right now. */}
-              {(["live-poc"] as Tab[]).map((t) => (
+              {/* Other tabs hidden on this branch — Live PoC, Compare, and Analysis are what's being tested right now. */}
+              {(["live-poc", "compare", "analysis"] as Tab[]).map((t) => (
                 <button
                   key={t}
                   onClick={() => setTab(t)}
@@ -259,7 +261,11 @@ export default function App() {
                     ? "Candidates"
                     : t === "how-it-works"
                     ? "How it works"
-                    : "Live PoC"}
+                    : t === "live-poc"
+                    ? "Live PoC"
+                    : t === "compare"
+                    ? "Compare"
+                    : "Analysis"}
                 </button>
               ))}
             </nav>
@@ -307,6 +313,31 @@ export default function App() {
             style={{ background: "#111214", borderColor: "rgba(255,255,255,0.08)" }}
           >
             <LivePocPanel />
+          </div>
+        </main>
+      )}
+
+      {/* Compare tab — rec-engine PoC vs. Mind Live vs. Mind Fixed, same role, side by side */}
+      {tab === "compare" && (
+        <main className="flex-1 overflow-hidden mx-auto w-full max-w-screen-xl px-4 md:px-8 py-6 flex flex-col min-h-0">
+          <div
+            className="flex-1 flex flex-col rounded-xl border min-h-0 overflow-hidden"
+            style={{ background: "#111214", borderColor: "rgba(255,255,255,0.08)" }}
+          >
+            <ComparePanel />
+          </div>
+        </main>
+      )}
+
+      {/* Analysis tab — per-role coverage funnel / verdict distribution / cross-model
+          overlap, reading from the same persisted runs the Compare tab uses. */}
+      {tab === "analysis" && (
+        <main className="flex-1 overflow-hidden mx-auto w-full max-w-screen-xl px-4 md:px-8 py-6 flex flex-col min-h-0">
+          <div
+            className="flex-1 flex flex-col rounded-xl border min-h-0 overflow-hidden"
+            style={{ background: "#111214", borderColor: "rgba(255,255,255,0.08)" }}
+          >
+            <AnalysisPanel />
           </div>
         </main>
       )}

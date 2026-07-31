@@ -1,4 +1,4 @@
-import type { CandidateRow, FeatureVector, FeedbackRecord, LiveJobSummary, LiveRecommendResult, LiveRunSummary, ModelStatus, RecommendResult, RetrainResult, StreamEvent } from "../types";
+import type { CandidateRow, FeatureVector, FeedbackRecord, LiveJobSummary, LiveRecommendResult, LiveRunSummary, MindRun, MindRunSummary, ModelStatus, RecommendResult, RetrainResult, StreamEvent } from "../types";
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
@@ -146,6 +146,43 @@ export async function listLiveRuns(jobOrderId: number): Promise<LiveRunSummary[]
 
 export async function getLiveRun(runId: string): Promise<LiveRecommendResult> {
   return apiFetch<LiveRecommendResult>(`/live/runs/${runId}`);
+}
+
+// ---------------------------------------------------------------------------
+// LLM-only pipeline (full eligible pool straight to Sonnet, no prefiltering
+// or coarse LLM call — see funnel_rerank.run_llm_only_pipeline). Same result
+// shape as the regular live pipeline, own run store/endpoints so the two
+// don't mix.
+// ---------------------------------------------------------------------------
+
+export async function runLlmOnlyRecommend(params: {
+  job_order_id: number;
+  candidate_limit?: number;
+}): Promise<LiveRecommendResult> {
+  return apiFetch<LiveRecommendResult>("/llm-only/recommend", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
+export async function listLlmOnlyRuns(jobOrderId: number): Promise<LiveRunSummary[]> {
+  return apiFetch<LiveRunSummary[]>(`/llm-only/runs?job_order_id=${jobOrderId}`);
+}
+
+export async function getLlmOnlyRun(runId: string): Promise<LiveRecommendResult> {
+  return apiFetch<LiveRecommendResult>(`/llm-only/runs/${runId}`);
+}
+
+// ---------------------------------------------------------------------------
+// Mind's persisted rerank runs (read-only comparison view)
+// ---------------------------------------------------------------------------
+
+export async function listMindRuns(roleId: number): Promise<MindRunSummary[]> {
+  return apiFetch<MindRunSummary[]>(`/mind/runs?role_id=${roleId}`);
+}
+
+export async function getMindRun(runId: string): Promise<MindRun> {
+  return apiFetch<MindRun>(`/mind/runs/${runId}`);
 }
 
 export async function* recommendStream(params: {

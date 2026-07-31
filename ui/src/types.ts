@@ -211,6 +211,17 @@ export interface LiveCoarseBrief {
 
 export type LiveVerdict = "strong_match" | "good_match" | "possible" | "weak_match";
 
+// Cross-model ranking lookup (Compare tab) — one entry per matchmaking-model
+// column, built from whatever run is currently loaded in that column so a
+// candidate's position across models can be compared without extra API
+// calls. Keyed generically by candidate_id so a future column (e.g.
+// LLM-only) just registers another source, no rework of the lookup itself.
+export interface RankSource {
+  label: string;
+  rankByCandidateId: Record<string, number>;
+  total: number;
+}
+
 export interface LiveRankedCandidate {
   candidate_id: string;
   name: string;
@@ -258,4 +269,51 @@ export interface LiveRunSummary {
   candidates_considered: number;
   candidates_passed_filter: number;
   candidates_reranked: number;
+}
+
+// ---------------------------------------------------------------------------
+// Mind's own persisted rerank runs (mind.shortlist_runs /
+// mind.shortlist_run_candidates, read-only) — powers the Compare tab's Mind
+// Live / Mind Fixed columns. See openspec/changes/compare-mind-poc-runs.
+// ---------------------------------------------------------------------------
+
+export interface MindRunSummary {
+  run_id: string;
+  role_id: number;
+  run_started_at: string;
+  scorer_version: string | null;
+  created_by: string | null;
+}
+
+/** Mind's own lean per-candidate snapshot (~3KB), NOT the full CandidateDetail —
+ * id/name/title/company/yearsExp/skills/etc, enough to render a meta row +
+ * skill chips without pulling reranker_breakdown-sized JSONB. */
+export interface MindCandidatePayload {
+  id: number;
+  name?: string;
+  title?: string;
+  currentCompany?: string;
+  yearsExp?: number;
+  location?: string;
+  skills?: string[];
+  salary?: string;
+  noticePeriod?: string;
+  workingModel?: string;
+}
+
+export interface MindRunCandidate {
+  candidate_id: number;
+  candidate_name: string;
+  reranker_rank: number | null;
+  reranker_score: number | null;
+  reranker_tier: string | null;
+  reranker_strengths: string[] | null;
+  reranker_concerns: string[] | null;
+  reranker_signals: unknown[] | null;
+  hard_filter_pass: boolean | null;
+  candidate_payload: MindCandidatePayload | null;
+}
+
+export interface MindRun extends MindRunSummary {
+  candidates: MindRunCandidate[];
 }

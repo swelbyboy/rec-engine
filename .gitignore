@@ -18,6 +18,9 @@ data/live_index/
 # Persisted live-pipeline run results — same PII concern
 data/live_runs/
 
+# Persisted LLM-only pipeline run results — same PII concern
+data/llm_only_runs/
+
 # Node / frontend
 ui/node_modules/
 ui/dist/

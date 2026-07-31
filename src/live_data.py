@@ -183,8 +183,60 @@ _CANDIDATE_SELECT = ",".join([
     "certifications", "headline", "cv_summary", "skills", "title_families",
     "requires_visa", "visa_status_text", "prescreen_summary", "reason_for_leaving",
     "current_situation", "recruiter_assessment", "drivers", "deal_breakers", "tech_signals",
-    "linkedin_url",
+    "linkedin_url", "date_added", "has_cv", "has_prescreen_notes", "is_mind_eligible",
 ])
+
+# Deterministic pre-pool eligibility gate (2026-07-31), reverse-engineered against
+# Mind's own "Available candidates" funnel (Prescreened & UK -> CV+LinkedIn -> Not in
+# process, YTD = 2,107) by cross-checking a real exported sample of eligible candidate
+# ids. Best reproduction found: 2,138 (1.5% off target, ~81% recall on the sample) —
+# NOT exact, since is_uk/mind_eligible_since show staleness against whatever live
+# computation actually backs the dashboard (some known-eligible rows have
+# location=None -> is_uk defaults false; some have mind_eligible_since entirely null).
+# Shipped as the closest available approximation rather than continuing to guess field
+# combinations against precomputed serving-layer snapshots. See git log / PR for the
+# investigation. Previously this table's full ~17.6k rows went in completely
+# unfiltered — this is a large improvement even if not pixel-perfect.
+_YTD_START = "2026-01-01"
+
+_ELIGIBILITY_FILTER = {
+    "is_uk": "eq.true",
+    "has_cv": "eq.true",
+    "linkedin_url": "not.is.null",
+    "has_prescreen_notes": "eq.true",
+    "mind_eligible_since": f"gte.{_YTD_START}",
+}
+
+# "Not in process" = no non-terminal Bullhorn job submission anywhere. app.candidates
+# has no per-candidate pipeline-stage field of its own, so this is read from
+# raw.bullhorn_job_submissions — a registry-pinned raw exception per Mind's own
+# docs/ARCHITECTURE.md (mind itself is allowed to read this raw table directly).
+_TERMINAL_SUBMISSION_STATUSES = {
+    "Rejected", "Candidate Rejected", "Client Rejected", "Consultant Rejected", "Placed",
+}
+
+
+def _fetch_in_process_candidate_ids() -> set[int]:
+    """Candidate ids with at least one active (non-terminal) job submission right now."""
+    ids: set[int] = set()
+    start = 0
+    page_size = 1000
+    while True:
+        resp = httpx.get(
+            f"{_SUPABASE_URL}/rest/v1/bullhorn_job_submissions",
+            headers={**_headers("raw"), "Range-Unit": "items", "Range": f"{start}-{start + page_size - 1}"},
+            params={"select": "candidate_id,status"},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        page = resp.json()
+        for row in page:
+            if row.get("status") not in _TERMINAL_SUBMISSION_STATUSES and row.get("candidate_id") is not None:
+                ids.add(row["candidate_id"])
+        if len(page) < page_size:
+            break
+        start += page_size
+    return ids
 
 
 def fetch_candidates_raw(candidate_ids: list[int] | None = None, limit: int = 200) -> list[dict]:
@@ -213,24 +265,34 @@ def fetch_cv_file_ref(candidate_id: int) -> dict | None:
 
 
 def fetch_all_candidates_raw(page_size: int = 1000) -> list[dict]:
-    """Fetch every row in app.candidates, paginating past PostgREST's per-request row cap.
+    """Fetch every eligible row in app.candidates, paginating past PostgREST's per-request row cap.
 
     Used to build the full candidate embedding index (candidate_index.py) —
     not for per-request pipeline runs, which read the index instead of
     hitting Supabase for the whole table each time.
+
+    Gated by _ELIGIBILITY_FILTER (is_uk + has_cv + linkedin_url + has_prescreen_notes +
+    mind_eligible_since >= YTD, deterministic — not a soft Constraint) plus an
+    in-process exclusion against raw.bullhorn_job_submissions, and ordered by
+    date_added desc (most-recently-added first, matching Mind's own gates-only
+    recency ordering) rather than raw candidate_id — the pool built here becomes
+    LiveCandidateIndex.all_candidates()'s iteration order, i.e. the pre-constraint
+    scan order every pipeline run sees before hard cutoffs / triage / rerank.
     """
+    in_process_ids = _fetch_in_process_candidate_ids()
+
     all_rows: list[dict] = []
     start = 0
     while True:
         resp = httpx.get(
             f"{_SUPABASE_URL}/rest/v1/candidates",
             headers={**_headers("app"), "Range-Unit": "items", "Range": f"{start}-{start + page_size - 1}"},
-            params={"select": _CANDIDATE_SELECT, "order": "candidate_id"},
+            params={"select": _CANDIDATE_SELECT, "order": "date_added.desc", **_ELIGIBILITY_FILTER},
             timeout=60,
         )
         resp.raise_for_status()
         page = resp.json()
-        all_rows.extend(page)
+        all_rows.extend(row for row in page if row["candidate_id"] not in in_process_ids)
         if len(page) < page_size:
             break
         start += page_size

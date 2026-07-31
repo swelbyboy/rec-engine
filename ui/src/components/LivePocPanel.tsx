@@ -5,6 +5,15 @@ import LiveCandidateList from "./LiveCandidateList";
 import LiveRolePane from "./LiveRolePane";
 import type { LiveJobSummary, LiveRecommendResult, LiveRunSummary } from "../types";
 
+// See ComparePanel.tsx for the full rationale — runs from before the
+// 2026-07-31 eligibility-gate change scanned the full unfiltered ~17.6k
+// candidate table; new runs are gated to Mind's own eligible pool (~2-3k).
+const FULL_UNIVERSE_THRESHOLD = 5000;
+
+function isFullUniverseRun(r: { candidates_considered: number }): boolean {
+  return r.candidates_considered > FULL_UNIVERSE_THRESHOLD;
+}
+
 export default function LivePocPanel() {
   const [jobs, setJobs] = useState<LiveJobSummary[]>([]);
   const [jobsError, setJobsError] = useState<string | null>(null);
@@ -124,6 +133,7 @@ export default function LivePocPanel() {
               {runs.map((r) => (
                 <option key={r.run_id} value={r.run_id}>
                   {new Date(r.completed_at).toLocaleString()} — {r.candidates_reranked} ranked
+                  {isFullUniverseRun(r) ? " · Full universe, no recency" : ""}
                 </option>
               ))}
             </select>
@@ -192,6 +202,16 @@ export default function LivePocPanel() {
             <Loader2 className="h-5 w-5 animate-spin" style={{ color: "#d5fa54" }} />
             Loading saved run…
           </div>
+        )}
+
+        {result && !loading && isFullUniverseRun(result) && (
+          <p
+            className="mb-4 rounded-md px-3 py-2 text-xs font-medium"
+            style={{ background: "rgba(234,179,8,0.12)", color: "#eab308" }}
+          >
+            ⚠ Full universe, no recency — this run scanned all {result.candidates_considered.toLocaleString()}{" "}
+            candidates unfiltered, before the Mind-eligibility gate + recency ordering shipped.
+          </p>
         )}
 
         {result && !loading && (
