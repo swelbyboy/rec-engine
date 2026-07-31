@@ -44,7 +44,7 @@ function transitionSteps(prev: PipelineStepState[], active: PipelineStep): Pipel
 }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("recruiter");
+  const [tab, setTab] = useState<Tab>("live-poc");
   const [appState, setAppState] = useState<AppState>("idle");
   const [steps, setSteps] = useState<PipelineStepState[]>(STEPS);
   const [result, setResult] = useState<RecommendResult | null>(null);
@@ -239,7 +239,8 @@ export default function App() {
               <span className="text-sm font-semibold tracking-tight text-white">Recruiter</span>
             </div>
             <nav className="flex items-center gap-1">
-              {(["recruiter", "hirer", "candidates", "how-it-works", "live-poc"] as Tab[]).map((t) => (
+              {/* Other tabs hidden on this branch — Live PoC is the only thing being tested right now. */}
+              {(["live-poc"] as Tab[]).map((t) => (
                 <button
                   key={t}
                   onClick={() => setTab(t)}
@@ -249,7 +250,8 @@ export default function App() {
                     color: tab === t ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.35)",
                   }}
                 >
-                  {t === "recruiter"
+                  {
+                    t === "recruiter"
                     ? "Recruiter"
                     : t === "hirer"
                     ? "Hirer"
