@@ -1,4 +1,4 @@
-import type { LiveCoarseBrief } from "../types";
+import type { LiveCoarseBrief, LiveRubricUsed } from "../types";
 
 const FLEX_STYLE: Record<string, { fg: string; label: string }> = {
   rigid: { fg: "rgba(255,255,255,0.4)", label: "Rigid" },
@@ -9,6 +9,7 @@ const FLEX_STYLE: Record<string, { fg: string; label: string }> = {
 interface LiveRolePaneProps {
   job: { id: string; title: string; company: string; required_skills: string[]; preferred_skills: string[] };
   coarseBrief: LiveCoarseBrief;
+  rubricUsed?: LiveRubricUsed | null;
   stats: {
     candidatesConsidered: number;
     candidatesIndexed: number;
@@ -18,7 +19,7 @@ interface LiveRolePaneProps {
   };
 }
 
-export default function LiveRolePane({ job, coarseBrief, stats }: LiveRolePaneProps) {
+export default function LiveRolePane({ job, coarseBrief, rubricUsed, stats }: LiveRolePaneProps) {
   // Persisted runs saved before required_skills/preferred_skills were added to
   // the job payload won't have these fields — default so old runs still load
   // instead of crashing (data/live_runs/*.json is old-code output, a real
@@ -80,6 +81,23 @@ export default function LiveRolePane({ job, coarseBrief, stats }: LiveRolePanePr
         </span>
         <span className="rounded px-2 py-1" style={{ background: "rgba(255,255,255,0.05)" }}>
           Sponsors visa: {coarseBrief.offers_visa_sponsorship}
+        </span>
+        <span
+          className="rounded px-2 py-1"
+          style={
+            rubricUsed
+              ? { background: "rgba(213,250,84,0.1)", color: "#d5fa54" }
+              : { background: "rgba(255,255,255,0.05)" }
+          }
+          title={
+            rubricUsed
+              ? `${rubricUsed.rubric_id} v${rubricUsed.version} (${rubricUsed.role_specific ? "role-specific" : "global template"}), ${rubricUsed.signal_count} signals`
+              : "No Mind rubric found for this role — fine-rerank used generic required/preferred-skills criteria"
+          }
+        >
+          {rubricUsed
+            ? `Rubric: ${rubricUsed.rubric_id} (${rubricUsed.signal_count} signals)`
+            : "Rubric: none (generic criteria)"}
         </span>
       </div>
 

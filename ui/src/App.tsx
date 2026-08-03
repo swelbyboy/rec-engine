@@ -317,9 +317,11 @@ export default function App() {
         </main>
       )}
 
-      {/* Compare tab — rec-engine PoC vs. Mind Live vs. Mind Fixed, same role, side by side */}
+      {/* Compare tab — rec-engine PoC vs. Mind Live vs. Mind Fixed, same role, side by side.
+          No max-w cap (unlike the other tabs) — four-plus columns of candidate cards benefit
+          from the full viewport on a large monitor instead of being squeezed into 1280px. */}
       {tab === "compare" && (
-        <main className="flex-1 overflow-hidden mx-auto w-full max-w-screen-xl px-4 md:px-8 py-6 flex flex-col min-h-0">
+        <main className="flex-1 overflow-hidden w-full px-4 md:px-8 py-6 flex flex-col min-h-0">
           <div
             className="flex-1 flex flex-col rounded-xl border min-h-0 overflow-hidden"
             style={{ background: "#111214", borderColor: "rgba(255,255,255,0.08)" }}

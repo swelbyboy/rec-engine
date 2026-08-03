@@ -248,10 +248,24 @@ export interface LiveEliminatedCandidate {
   reasons: string[];
 }
 
+// Present when a Mind per-role weighted rubric (mind.rubric_configs) was
+// found and injected into the fine-rerank prompt — see
+// funnel_rerank._format_rubric_signals. null when no rubric was configured
+// for this role (or none reachable), in which case fine-rerank fell back to
+// its generic required/preferred-skills-only prompt, same as before this
+// existed.
+export interface LiveRubricUsed {
+  rubric_id: string;
+  version: number;
+  role_specific: boolean; // false = a reusable role_id-IS-NULL global template was used instead
+  signal_count: number;
+}
+
 export interface LiveRecommendResult {
   run_id: string;
   job: { id: string; title: string; company: string; required_skills: string[]; preferred_skills: string[] };
   coarse_brief: LiveCoarseBrief;
+  rubric_used: LiveRubricUsed | null;
   ranked: LiveRankedCandidate[];
   eliminated: LiveEliminatedCandidate[];
   candidates_considered: number;

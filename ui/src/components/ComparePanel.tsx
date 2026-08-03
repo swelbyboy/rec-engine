@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { ChevronDown, Loader2 } from "lucide-react";
+import { ChevronDown, Eye, EyeOff, Loader2 } from "lucide-react";
 import {
   fetchLiveJobs,
   getLiveRun,
@@ -13,6 +13,7 @@ import {
 import LiveCandidateCard from "./LiveCandidateCard";
 import MindCandidateCard from "./MindCandidateCard";
 import CrossModelRankModal from "./CrossModelRankModal";
+import LiveRolePane from "./LiveRolePane";
 import type { LiveJobSummary, LiveRecommendResult, LiveRunSummary, MindRun, MindRunSummary, RankSource } from "../types";
 
 // Runs from before the 2026-07-31 eligibility-gate change scanned the full
@@ -66,16 +67,61 @@ function RunPicker<T extends { run_id: string }>({
   );
 }
 
-function ColumnShell({ title, controls, children }: { title: string; controls: ReactNode; children: ReactNode }) {
+function ColumnShell({
+  title,
+  controls,
+  children,
+  hidden,
+  onToggleHidden,
+}: {
+  title: string;
+  controls: ReactNode;
+  children: ReactNode;
+  hidden: boolean;
+  onToggleHidden: () => void;
+}) {
+  // Collapsed to a narrow strip rather than unmounted — the column's own
+  // run-picker selection, loaded result, and its contribution to
+  // rankSources/jobResults up in ComparePanel all stay intact while hidden,
+  // so toggling visibility back on doesn't re-fetch or lose state, and a
+  // hidden column still counts toward the cross-model rank modal.
+  if (hidden) {
+    return (
+      <div
+        className="flex flex-none w-10 flex-col items-center gap-3 rounded-xl border py-3"
+        style={{ borderColor: "rgba(255,255,255,0.08)", background: "#0b0c0d" }}
+      >
+        <button
+          onClick={onToggleHidden}
+          className="rounded p-1.5 hover:bg-white/5"
+          title={`Show ${title}`}
+        >
+          <EyeOff className="h-3.5 w-3.5" style={{ color: "rgba(255,255,255,0.4)" }} />
+        </button>
+        <p
+          className="text-[10px] font-semibold uppercase tracking-widest whitespace-nowrap"
+          style={{ color: "rgba(255,255,255,0.3)", writingMode: "vertical-rl" }}
+        >
+          {title}
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div
       className="flex flex-1 min-w-0 flex-col rounded-xl border"
       style={{ borderColor: "rgba(255,255,255,0.08)", background: "#0b0c0d" }}
     >
       <div className="flex-none flex flex-col gap-2 border-b px-4 py-3" style={{ borderColor: "rgba(255,255,255,0.08)" }}>
-        <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.3)" }}>
-          {title}
-        </p>
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.3)" }}>
+            {title}
+          </p>
+          <button onClick={onToggleHidden} className="shrink-0 rounded p-1 hover:bg-white/5" title={`Hide ${title}`}>
+            <Eye className="h-3.5 w-3.5" style={{ color: "rgba(255,255,255,0.4)" }} />
+          </button>
+        </div>
         {controls}
       </div>
       <div className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-2 min-h-[220px]">{children}</div>
@@ -105,6 +151,9 @@ function LiveStyleColumn({
   showFullUniverseWarning,
   onRankedChange,
   onCandidateClick,
+  onResultChange,
+  hidden,
+  onToggleHidden,
 }: {
   title: string;
   jobOrderId: number | null;
@@ -113,6 +162,14 @@ function LiveStyleColumn({
   showFullUniverseWarning?: boolean;
   onRankedChange: (label: string, source: RankSource | null) => void;
   onCandidateClick: (candidateId: string, candidateName: string) => void;
+  // Reports this column's currently-loaded full result up to ComparePanel —
+  // separate from onRankedChange (which only extracts the rank lookup) so
+  // the job-details side panel can read job/coarse_brief/rubric_used without
+  // every column needing to care about that; optional since MindColumn has
+  // no equivalent (Mind's run shape carries no parsed JobDescription).
+  onResultChange?: (label: string, result: LiveRecommendResult | null) => void;
+  hidden: boolean;
+  onToggleHidden: () => void;
 }) {
   const [runs, setRuns] = useState<LiveRunSummary[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
@@ -164,9 +221,16 @@ function LiveStyleColumn({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [result, title]);
 
+  useEffect(() => {
+    onResultChange?.(title, result);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result, title]);
+
   return (
     <ColumnShell
       title={title}
+      hidden={hidden}
+      onToggleHidden={onToggleHidden}
       controls={
         runs.length > 0 ? (
           <RunPicker
@@ -218,6 +282,8 @@ function MindColumn({
   hint,
   onRankedChange,
   onCandidateClick,
+  hidden,
+  onToggleHidden,
 }: {
   title: string;
   runs: MindRunSummary[];
@@ -225,6 +291,8 @@ function MindColumn({
   hint?: string;
   onRankedChange: (label: string, source: RankSource | null) => void;
   onCandidateClick: (candidateId: string, candidateName: string) => void;
+  hidden: boolean;
+  onToggleHidden: () => void;
 }) {
   const [selectedRunId, setSelectedRunId] = useState(defaultRunId);
   const [result, setResult] = useState<MindRun | null>(null);
@@ -268,6 +336,8 @@ function MindColumn({
   return (
     <ColumnShell
       title={title}
+      hidden={hidden}
+      onToggleHidden={onToggleHidden}
       controls={
         runs.length > 0 ? (
           <>
@@ -338,6 +408,29 @@ export default function ComparePanel() {
     });
   }
 
+  // Job-details side panel — reuses whichever LiveStyleColumn (rec-engine
+  // PoC or LLM-only) currently has a run loaded, since only those two carry
+  // a parsed JobDescription (required/preferred skills, coarse role brief,
+  // rubric_used); Mind's run shape doesn't. rec-engine PoC preferred over
+  // LLM-only when both are loaded, since it's the one with a coarse brief +
+  // rubric lookup actually populated (LLM-only always has coarse_brief={}
+  // and rubric_used=null — see funnel_rerank.run_llm_only_pipeline).
+  const [jobResults, setJobResults] = useState<Record<string, LiveRecommendResult | null>>({});
+  function setJobResult(label: string, result: LiveRecommendResult | null) {
+    setJobResults((prev) => ({ ...prev, [label]: result }));
+  }
+  const jobPaneSource = jobResults["rec-engine PoC"] ? "rec-engine PoC" : jobResults["LLM-only"] ? "LLM-only" : null;
+  const jobPaneResult = jobPaneSource ? jobResults[jobPaneSource] : null;
+
+  // Per-column visibility — a column stays mounted when hidden (see
+  // ColumnShell's collapsed-strip branch), so hiding one is purely a view
+  // preference: its run selection, loaded result, and rank/job-detail
+  // contributions up here are unaffected.
+  const [hiddenColumns, setHiddenColumns] = useState<Record<string, boolean>>({});
+  function toggleColumnHidden(label: string) {
+    setHiddenColumns((prev) => ({ ...prev, [label]: !prev[label] }));
+  }
+
   useEffect(() => {
     fetchLiveJobs()
       .then((rows) => {
@@ -403,7 +496,32 @@ export default function ComparePanel() {
       {/* Four independent columns — each has its own run-picker, one column's data
           never blocks another's from rendering (see spec: empty-column scenario). */}
       <div className="flex-1 overflow-y-auto px-6 py-5">
-        <div className="flex flex-col gap-4 lg:flex-row">
+        <div className="flex flex-col gap-5 lg:flex-row">
+          {jobPaneResult ? (
+            <div className="flex-none lg:w-[300px]">
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest" style={{ color: "rgba(255,255,255,0.3)" }}>
+                Job details <span style={{ color: "rgba(255,255,255,0.2)" }}>· from {jobPaneSource}</span>
+              </p>
+              <LiveRolePane
+                job={jobPaneResult.job}
+                coarseBrief={jobPaneResult.coarse_brief}
+                rubricUsed={jobPaneResult.rubric_used}
+                stats={{
+                  candidatesConsidered: jobPaneResult.candidates_considered,
+                  candidatesIndexed: jobPaneResult.candidates_indexed,
+                  candidatesPassedFilter: jobPaneResult.candidates_passed_filter,
+                  candidatesReranked: jobPaneResult.candidates_reranked,
+                  eliminatedCount: jobPaneResult.eliminated.length,
+                }}
+              />
+            </div>
+          ) : (
+            selectedJobId != null && (
+              <div className="w-full flex-none text-xs lg:w-[300px] lg:border-r lg:pr-5" style={{ color: "rgba(255,255,255,0.3)", borderColor: "rgba(255,255,255,0.08)" }}>
+                Select a rec-engine PoC or LLM-only run below to see job details here.
+              </div>
+            )
+          )}
           <LiveStyleColumn
             title="rec-engine PoC"
             jobOrderId={selectedJobId}
@@ -412,6 +530,9 @@ export default function ComparePanel() {
             showFullUniverseWarning
             onRankedChange={setRankSource}
             onCandidateClick={(id, name) => setSelectedCandidate({ id, name })}
+            onResultChange={setJobResult}
+            hidden={!!hiddenColumns["rec-engine PoC"]}
+            onToggleHidden={() => toggleColumnHidden("rec-engine PoC")}
           />
           <MindColumn
             title="Mind Live"
@@ -419,6 +540,8 @@ export default function ComparePanel() {
             defaultRunId={liveDefault?.run_id ?? ""}
             onRankedChange={setRankSource}
             onCandidateClick={(id, name) => setSelectedCandidate({ id, name })}
+            hidden={!!hiddenColumns["Mind Live"]}
+            onToggleHidden={() => toggleColumnHidden("Mind Live")}
           />
           <MindColumn
             title="Mind Fixed"
@@ -427,6 +550,8 @@ export default function ComparePanel() {
             hint={fixedHint}
             onRankedChange={setRankSource}
             onCandidateClick={(id, name) => setSelectedCandidate({ id, name })}
+            hidden={!!hiddenColumns["Mind Fixed"]}
+            onToggleHidden={() => toggleColumnHidden("Mind Fixed")}
           />
           <LiveStyleColumn
             title="LLM-only"
@@ -435,6 +560,9 @@ export default function ComparePanel() {
             getRun={getLlmOnlyRun}
             onRankedChange={setRankSource}
             onCandidateClick={(id, name) => setSelectedCandidate({ id, name })}
+            onResultChange={setJobResult}
+            hidden={!!hiddenColumns["LLM-only"]}
+            onToggleHidden={() => toggleColumnHidden("LLM-only")}
           />
         </div>
       </div>

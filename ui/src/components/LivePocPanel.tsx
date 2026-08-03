@@ -219,6 +219,7 @@ export default function LivePocPanel() {
             <LiveRolePane
               job={result.job}
               coarseBrief={result.coarse_brief}
+              rubricUsed={result.rubric_used}
               stats={{
                 candidatesConsidered: result.candidates_considered,
                 candidatesIndexed: result.candidates_indexed,
