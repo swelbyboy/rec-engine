@@ -109,20 +109,24 @@ are `pct_*_ok` from `_summarize`.
 ## Running it
 
 ```bash
+# Specific roles:
 python -m src.fit_proxy_report 1409 1596 1360 --top-n 10
+
+# Every currently pinned/active Mind role (same source as the UI's job
+# picker, live_data.fetch_active_mind_roles) — no need to list ids by hand:
+python -m src.fit_proxy_report --all --top-n 10
 ```
 
-Multiple job_order_ids run sequentially; a failure on one role (e.g. no Mind
-run exists yet) prints to stderr and doesn't stop the rest. Needs a working
-`ANTHROPIC_API_KEY` (one JD parse + title embeddings per role) and
-`SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` (same creds as the rest of the
-live pipeline).
+Multiple job_order_ids (explicit or via `--all`) run sequentially; a failure
+on one role (e.g. no Mind run exists yet) prints to stderr and doesn't stop
+the rest. Needs a working `ANTHROPIC_API_KEY` (one JD parse + title
+embeddings per role) and `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` (same
+creds as the rest of the live pipeline).
 
-There's no aggregate-across-roles mode built in — see the inline script
-pattern used to produce the session's aggregate numbers (import
-`_summarize`, `_rows_from_mind_run`, `rec_engine_candidate`,
-`compute_candidate_fit`, `_latest_mind_run` directly and accumulate rows
-across job_order_ids before summarizing once).
+Whenever more than one role actually succeeds, an `AGGREGATE across N
+roles` table prints at the end — every role's rows pooled per system before
+summarizing once. This is the same pattern used to produce every aggregate
+number quoted in this session's work; no separate script needed anymore.
 
 ## Known limitations
 

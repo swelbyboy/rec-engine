@@ -224,7 +224,7 @@ def _rows_from_mind_run(
     return rows
 
 
-def run_report(job_order_id: int, top_n: int = 10) -> None:
+def run_report(job_order_id: int, top_n: int = 10) -> list[tuple[str, list[dict]]]:
     job_raw = live_data.fetch_job_raw(job_order_id)
     print(f"\n=== job_order_id={job_order_id}: {job_raw['title']} @ {job_raw['company']} ===")
 
@@ -303,18 +303,60 @@ def run_report(job_order_id: int, top_n: int = 10) -> None:
             f"{_fmt_pct(s['pct_title_ok']):>10}{_fmt_pct(s['pct_fully_clean']):>14}"
         )
 
+    return systems
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("job_order_ids", nargs="+", type=int)
+    parser.add_argument(
+        "job_order_ids", nargs="*", type=int,
+        help="Specific job_order_ids to report on. Omit when using --all.",
+    )
+    parser.add_argument(
+        "--all", action="store_true",
+        help="Run against every currently pinned/active Mind role (live_data.fetch_active_mind_roles — "
+             "the same source the UI's job picker uses) instead of listing ids by hand.",
+    )
     parser.add_argument("--top-n", type=int, default=10)
     args = parser.parse_args()
 
-    for job_order_id in args.job_order_ids:
+    if args.all:
+        roles = live_data.fetch_active_mind_roles(limit=50)
+        job_order_ids = [r["job_order_id"] for r in roles]
+        print(f"--all: running against {len(job_order_ids)} pinned roles: {job_order_ids}")
+    elif args.job_order_ids:
+        job_order_ids = args.job_order_ids
+    else:
+        parser.error("provide one or more job_order_ids, or pass --all")
+
+    # Accumulated across every role for a combined aggregate at the end —
+    # only printed when more than one role actually ran, since a single-role
+    # aggregate would just repeat that role's own table.
+    aggregate: dict[str, list[dict]] = {}
+    successful_roles = 0
+
+    for job_order_id in job_order_ids:
         try:
-            run_report(job_order_id, top_n=args.top_n)
+            systems = run_report(job_order_id, top_n=args.top_n)
+            successful_roles += 1
+            for label, rows in systems:
+                aggregate.setdefault(label, []).extend(rows)
         except Exception as exc:
             print(f"\n=== job_order_id={job_order_id}: FAILED ({exc}) ===", file=sys.stderr)
+
+    if successful_roles > 1:
+        print(f"\n\n=== AGGREGATE across {successful_roles} roles ===")
+        print(f"{'system':<22}{'n':>4}{'avg skill cov':>16}{'exp ok':>10}{'comp ok':>10}{'title ok':>10}{'fully clean':>14}")
+        for label, rows in aggregate.items():
+            s = _summarize(rows)
+            if s["n"] == 0:
+                print(f"{label:<22}{'—':>4}  (no data)")
+                continue
+            print(
+                f"{label:<22}{s['n']:>4}{_fmt_pct(s['avg_skill_coverage']):>16}"
+                f"{_fmt_pct(s['pct_experience_ok']):>10}{_fmt_pct(s['pct_compensation_ok']):>10}"
+                f"{_fmt_pct(s['pct_title_ok']):>10}{_fmt_pct(s['pct_fully_clean']):>14}"
+            )
 
 
 if __name__ == "__main__":
