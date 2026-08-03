@@ -26,7 +26,15 @@ from dotenv import load_dotenv
 
 from .constraint_engine import run_constraint_engine
 from .explanation import _format_constraint_matches
-from .models import FINE_RERANK_MODEL, LLM_MODEL, Candidate, CompatibilityResult, JobDescription
+from .models import (
+    FINE_RERANK_MODEL,
+    LLM_MODEL,
+    Candidate,
+    CompatibilityResult,
+    Constraint,
+    ConstraintOperator,
+    JobDescription,
+)
 from .scoring import skill_match_detail_batch
 
 load_dotenv()
@@ -256,11 +264,15 @@ Hard constraints:
 FINE_RERANK_SYSTEM = """You are a senior recruiter producing a ranked shortlist for a hiring manager.
 
 You are given a role briefing and a pool of candidates who have already passed
-hard-constraint filtering (visa, location, salary range, clearance, etc. have
-already been checked — do not re-litigate those). Your job is to judge FIT:
+hard-constraint filtering (visa, location, clearance, plus clear-cut
+compensation/experience-overqualification mismatches, all already checked —
+do not re-litigate those). That last check is deliberately lenient: only a
+gross mismatch is filtered before reaching you, so a smaller compensation or
+experience gap can still be present — see the "Compensation signal" /
+"Experience fit" lines and the rule on them below. Your job is to judge FIT:
 how well each candidate's skills, experience, and background match what this
-role actually needs, using the constraint-match detail and background provided
-for each candidate.
+role actually needs, using the constraint-match detail and background
+provided for each candidate.
 
 For each candidate, assign:
 - verdict: "strong_match" | "good_match" | "possible" | "weak_match"
@@ -279,7 +291,28 @@ Rules:
   from structured skill data, not inferred by you). Treat missing REQUIRED
   skills as a real fit gap and say so plainly — do not let broad seniority or
   an unrelated but impressive background paper over a candidate having none
-  of the specific skills this role needs."""
+  of the specific skills this role needs.
+- Each candidate block may also include an "Experience fit" line and/or a
+  "Compensation signal" line — both computed directly from structured data,
+  not inferred by you, and both only appear for a gap too small to have
+  already been filtered out. A candidate flagged this way is not
+  automatically a strong match on a junior/mid-level role even at this
+  smaller gap: they can still reject the offer, get bored quickly, or expect
+  broader scope than the role has. Treat a flagged overqualification/
+  compensation gap as seriously as a missing required skill — name it
+  plainly in the rationale and let it pull the verdict down — rather than
+  defaulting to strong_match purely because their skills and background are
+  impressive. This cuts both ways: being below the stated minimum is also a
+  real gap, not a rounding error.
+- If a "Role rubric" block is provided below, it is what the hiring manager
+  actually weighted this role on — judge fit primarily against those
+  weighted signals, in rough proportion to their listed weights, not generic
+  skill overlap. Treat required/preferred skills as a floor, not the whole
+  picture, when a rubric is present: a candidate can be a strong rubric fit
+  despite a minor skill gap, or a weak one despite full skill coverage, if
+  the rubric's higher-weighted signals say so. A "gate" listed in the rubric
+  marks a hard flag condition (raise it in rationale if triggered), not an
+  ordinary scored signal."""
 
 FINE_RERANK_TOOL_SCHEMA = {
     "name": "rank_candidates",
@@ -309,11 +342,248 @@ FINE_RERANK_TOOL_SCHEMA = {
 }
 
 
+def _format_rubric_signals(rubric: dict | None) -> str:
+    """Format a `mind.rubric_configs` row's `signals` into a fine-rerank
+    prompt block, mirroring the SIGNALS section Mind's own production
+    reranker injects (`buildSignalsSystem`,
+    mind/apps/web/src/lib/reranks/rerank-anthropic.ts) — same id/label/tier/
+    weight/guidance shape, so the LLM here judges fit against the same
+    role-specific weighted criteria Mind's reranker uses instead of generic
+    required/preferred skills only.
+
+    Deliberately simpler than Mind's version: Mind has the LLM emit a
+    strong/partial/absent/violated verdict PER signal and computes the
+    weighted score deterministically afterward (`signal-scoring.ts`) — a
+    second scoring pipeline and tool-schema change. This only reshapes the
+    PROMPT; rec-engine's existing strong/good/possible/weak_match verdict +
+    merge-by-verdict-tier logic (`_fine_rerank_chunk`/`_merge_ranked_batches`)
+    is untouched, per CHANGES_VS_MIND_MAIN.md's framing of this as a
+    concrete, small change, not a rescoring-pipeline redesign.
+
+    Returns "" (not None) when there's no rubric to inject — the caller
+    splices this directly into the prompt, so a missing rubric should just
+    mean an absent section, not a conditional the caller has to branch on.
+    """
+    if not rubric or not rubric.get("signals"):
+        return ""
+
+    signals = rubric["signals"]
+    scored = sorted(
+        (s for s in signals if not s.get("gating")),
+        key=lambda s: s.get("weight", 0),
+        reverse=True,
+    )
+    gating = [s for s in signals if s.get("gating")]
+
+    if not scored and not gating:
+        return ""
+
+    lines = [
+        f"- [{s.get('tier', 'primary')}, weight={s.get('weight', 0)}] "
+        f"{s.get('label', s.get('id', 'signal'))}: {s.get('guidance', '')}"
+        for s in scored
+    ]
+    block = (
+        "Role rubric — this role has a hiring-manager-defined weighted rubric "
+        "(see the rule above on how to use it):\n" + "\n".join(lines)
+    )
+
+    if gating:
+        gate_lines = [
+            f"- \"{s.get('id', 'gate')}\" ({s.get('gate_on', 'counter_evidence')}): {s.get('label', '')}"
+            for s in gating
+        ]
+        block += "\n\nGates (flag in rationale if triggered, do not just silently downrank):\n" + "\n".join(gate_lines)
+
+    return block
+
+
+# Two-tier, same shape as SKILL_FLOOR_RATIO/TITLE_RELEVANCE_FLOOR below: a
+# lenient ELIMINATION threshold (deterministic gate, _apply_*_check) catches
+# only clear-cut mismatches; a lower SIGNAL threshold surfaces a smaller gap
+# as an explicit, non-eliminating prompt line for fine-rerank to weigh (a
+# near-boundary candidate — e.g. 10% over budget — might still reasonably
+# take the role, so it isn't cut, but the LLM should still see the number).
+# Live-validated against job_order_id 1409 (CoLoop, £70-90K band, 1+ yrs,
+# junior): both real over-band candidates found in this role's actual
+# fine-rerank output (Chris Arderne £120k/33% over/10 yrs, Qasim Asghar
+# £110k/22% over/11 yrs) clear the elimination thresholds below with margin.
+EXPERIENCE_SIGNAL_YEARS = 3
+EXPERIENCE_ELIMINATION_YEARS = 6
+COMPENSATION_SIGNAL_RATIO = 0.15
+# 0.30, matching Mind's own production default (`salaryOverBudgetPct`,
+# mind/apps/web/src/lib/matching/scoring-engine.ts:891 — "0.0 = flat ceiling,
+# 0.3 = legacy 30% buffer"). Originally shipped here at 0.20 with no
+# particular justification beyond "lenient"; investigating a WaveLabs
+# (job_order_id 1535) false-positive-looking result found Mind's own team
+# already tuned this exact threshold in production, and there's no live
+# evidence rec-engine's roles need a tighter bar than Mind's. Mind's version
+# is also per-role overridable (`role.salaryOverBudgetPct`) — rec-engine's
+# isn't yet; worth adding if a specific role needs a different tolerance.
+COMPENSATION_ELIMINATION_RATIO = 0.30
+
+# The overqualification check (both the informational line and the elimination
+# gate below) applies only when the role's OWN stated minimum is itself this
+# low — NOT when job.seniority says "junior"/"mid". Live-found on job_order_id
+# 1596 (Calibre, "2+ years... ready to operate at a senior level... This isn't
+# a typical junior role"): that framing is exactly the kind of text that gets
+# job.seniority extracted as "senior" despite min_years_experience correctly
+# staying 2 — a categorical field the model derives from tone/scope language,
+# not the same as a directly-stated number. Gating on job.seniority there
+# silently disabled the whole check for this role (11-19.5 yr candidates kept
+# reaching the top of the shortlist); min_years_experience is the number
+# actually stated in the JD text ("2+ years of professional experience") and
+# far less ambiguous to extract correctly.
+EXPERIENCE_GATE_MAX_TARGET_YEARS = 3
+
+
+def _employer_salary_ceiling(job: JobDescription) -> tuple[float, str] | None:
+    """The employer's stated salary ceiling, if any, found by scanning for a
+    `currency`-bearing constraint rather than a specific canonical_key.
+
+    extraction.py's own tool schema documents `currency` as set "for salary
+    constraints" and null otherwise — reliable regardless of what
+    canonical_key/category string the model happened to pick for that
+    constraint. Relying on canonical_key here would reproduce the exact
+    failure mode already found and fixed for the UK/visa check: the
+    employer-side key drifting per extraction run (there, "uk_based" /
+    "location_uk_based" / "work_location_requirement" for the same JD) means
+    it often won't exact-match the candidate-side constraint's hardcoded
+    "salary_min" key, and salary constraints are short enough that semantic
+    (embedding) similarity between generic "salary ~£X" descriptions can't be
+    trusted to consistently clear the 0.75 threshold either — so a real
+    mismatch can quietly resolve to "no candidate constraint found ->
+    compatible" and reach fine-rerank invisibly. This sidesteps that whole
+    path with a signal the schema itself guarantees.
+
+    Deliberately does NOT require `type == hard`: whether a stated salary
+    band like "£70K-£90K" reads as a strict cap or an advertised range is
+    exactly the kind of judgment call LLM extraction is inconsistent on run
+    to run — gating on it here would reintroduce the same unreliable-
+    classification dependency this function exists to avoid, and would
+    silently disable the whole check for any job where that one call happens
+    to land on "soft". A currency-bearing constraint is only ever produced
+    for an actually-stated compensation figure (never inferred, per
+    extraction.py's few-shot examples), so treating any of them as ceiling
+    evidence — hard or soft — is safe.
+
+    Prefers an explicit `max`-operator constraint (the natural shape for a
+    ceiling); falls back to the highest-valued currency-bearing constraint if
+    the model represented a range some other way (e.g. two `requires`/`min`
+    constraints for a "£70K-£90K" band instead of one `max`).
+
+    Falls back further to `job.bullhorn_salary` — the ATS's own structured
+    job-order salary figure (live_data.fetch_job_raw) — when no constraint
+    yields a ceiling at all. Live-checked across all 7 currently-pinned
+    roles: only 1 stated an explicit band in its JD prose (extractable into a
+    constraint); all 7 had the Bullhorn field populated. Without this
+    fallback, the compensation-band gate was a silent no-op for 6 of 7 real
+    roles — a structured field beats "did an LLM happen to notice a salary
+    mention in free text," same lesson as the currency-over-canonical-key
+    fix above, just a different source.
+    """
+    salary_constraints = [
+        c for c in job.constraints
+        if c.currency is not None and isinstance(c.value, (int, float))
+    ]
+    if salary_constraints:
+        max_op = [c for c in salary_constraints if c.operator == ConstraintOperator.max]
+        best = max(max_op or salary_constraints, key=lambda c: c.value)
+        return float(best.value), (best.currency or "")
+
+    if job.bullhorn_salary:
+        return job.bullhorn_salary, "GBP"
+
+    return None
+
+
+def _role_target_line(job: JobDescription) -> str:
+    return f"Role target: {job.seniority}-level, {job.min_years_experience}+ yrs experience" if job.min_years_experience or job.seniority else ""
+
+
+def _candidate_experience_fit_line(job: JobDescription, candidate: Candidate) -> str:
+    """Informational only — candidates past EXPERIENCE_ELIMINATION_YEARS never
+    reach this (see _apply_experience_overqualification_check); this covers
+    the milder SIGNAL-tier gap plus the "under minimum" direction, which
+    isn't gated at all (years-of-experience is too weak a proxy to eliminate
+    on the low side).
+    """
+    if job.min_years_experience <= 0:
+        return ""
+    delta = candidate.years_experience - job.min_years_experience
+    if delta < 0:
+        return (
+            f"\nExperience fit: {candidate.years_experience:.0f} yrs — "
+            f"{abs(delta):.0f} yrs UNDER the role's stated {job.min_years_experience}+ yr minimum"
+        )
+    if job.min_years_experience <= EXPERIENCE_GATE_MAX_TARGET_YEARS and delta >= EXPERIENCE_SIGNAL_YEARS:
+        return (
+            f"\nExperience fit: {candidate.years_experience:.0f} yrs — {delta:.0f} yrs ABOVE the "
+            f"{job.min_years_experience}+ yr minimum this role explicitly states "
+            f"(possibly overqualified — see the rule on overqualification above)"
+        )
+    return f"\nExperience fit: {candidate.years_experience:.0f} yrs vs role's {job.min_years_experience}+ yr minimum"
+
+
+def _candidate_salary_constraint(candidate: Candidate) -> Constraint | None:
+    return next((c for c in candidate.constraints if c.canonical_key == "salary_min"), None)
+
+
+def _salary_over_ratio(
+    candidate: Candidate, salary_ceiling: tuple[float, str] | None
+) -> float | None:
+    """(candidate salary - ceiling) / ceiling, or None if not comparable
+    (no ceiling, no candidate figure, missing/mismatched currency — never
+    guess an FX conversion, and never assume a currency-less number is in
+    the ceiling's currency). Shared by the SIGNAL-tier prompt line and the
+    ELIMINATION-tier deterministic gate so both use the exact same number.
+
+    Requiring cand_c.currency to be explicitly PRESENT (not just checking it
+    doesn't mismatch when present) mirrors Mind's own resolveAnnualGbp
+    (mind/apps/web/src/lib/matching/scoring-engine.ts:802) — "Bare numbers
+    from Bullhorn have no currency context and treating them as GBP causes
+    false rejections for international candidates." Zero-impact on the
+    current candidate index (every salary_min constraint there does carry a
+    currency), but defensive against a candidate row that has a salary
+    figure with no currency code recorded.
+    """
+    if salary_ceiling is None:
+        return None
+    ceiling_value, ceiling_currency = salary_ceiling
+    cand_c = _candidate_salary_constraint(candidate)
+    if cand_c is None or not isinstance(cand_c.value, (int, float)):
+        return None
+    if not cand_c.currency or not ceiling_currency or cand_c.currency.upper() != ceiling_currency.upper():
+        return None
+    if not ceiling_value:
+        return None
+    return (float(cand_c.value) - ceiling_value) / ceiling_value
+
+
+def _compensation_fit_line(candidate: Candidate, salary_ceiling: tuple[float, str] | None) -> str:
+    """Informational only — candidates past COMPENSATION_ELIMINATION_RATIO
+    never reach this (see _apply_compensation_band_check); this covers the
+    milder SIGNAL-tier gap for near-boundary survivors.
+    """
+    over_ratio = _salary_over_ratio(candidate, salary_ceiling)
+    if over_ratio is None or over_ratio <= COMPENSATION_SIGNAL_RATIO:
+        return ""
+    ceiling_value, ceiling_currency = salary_ceiling  # salary_ceiling is not None here (over_ratio would be)
+    cand_value = float(_candidate_salary_constraint(candidate).value)
+    return (
+        f"\nCompensation signal: candidate's salary figure on file is "
+        f"~{ceiling_currency}{cand_value:,.0f} vs this role's stated band up to "
+        f"{ceiling_currency}{ceiling_value:,.0f} — {over_ratio:.0%} above the top of the band "
+        f"(possibly overqualified/expensive for this role — see the rule above)"
+    )
+
+
 def _format_candidate_block(
     job: JobDescription,
     candidate: Candidate,
     cr: CompatibilityResult,
     skill_detail: tuple[list[str], list[str]],
+    salary_ceiling: tuple[float, str] | None = None,
 ) -> str:
     constraint_block = _format_constraint_matches(cr)
     flagged = " (some constraint matches flagged for review — verify manually)" if cr.flagged_for_review else ""
@@ -329,13 +599,16 @@ def _format_candidate_block(
         if required_missing:
             skill_fit_line += f" — MISSING REQUIRED: {', '.join(required_missing)}"
 
+    experience_fit_line = _candidate_experience_fit_line(job, candidate)
+    compensation_line = _compensation_fit_line(candidate, salary_ceiling)
+
     return f"""### Candidate {candidate.id}: {candidate.name}
 Experience: {candidate.years_experience} yrs | Seniority: {candidate.seniority_level}
 Skills: {', '.join(candidate.skills[:20]) or 'none listed'}
 Background: {_strip_lone_surrogates(candidate.raw_linkedin) or '(no summary)'}
 CV notes: {_strip_lone_surrogates(candidate.raw_cv) or '(none)'}
 Recruiter call notes: {_strip_lone_surrogates(candidate.raw_interview_transcript) or '(none)'}
-{skill_fit_line}
+{skill_fit_line}{experience_fit_line}{compensation_line}
 Constraint match against this role{flagged}:
 {constraint_block}"""
 
@@ -361,6 +634,8 @@ def _fine_rerank_chunk(
     pool: list[Candidate],
     compatibility_results: dict[str, CompatibilityResult],
     skill_detail: dict[str, tuple[list[str], list[str]]],
+    rubric_block: str = "",
+    salary_ceiling: tuple[float, str] | None = None,
 ) -> list[dict]:
     """Rank a single chunk (≤RERANK_BATCH_SIZE) with one batched LLM call.
 
@@ -370,18 +645,30 @@ def _fine_rerank_chunk(
 
     skill_detail is computed once for the whole pool by the caller (fine_rerank)
     and passed in here — avoids re-running skill_match_detail_batch per chunk.
+
+    rubric_block is pre-formatted text (`_format_rubric_signals`), computed
+    once per run by the caller and passed through unchanged — same shape as
+    coarse_brief here: role-level context that doesn't vary per chunk.
+
+    salary_ceiling (`_employer_salary_ceiling`) is threaded into each
+    candidate block's "Compensation signal" line — see that function's
+    docstring for why this doesn't rely on canonical-key constraint matching.
     """
     if not pool:
         return []
 
     candidate_blocks = "\n\n".join(
-        _format_candidate_block(job, c, compatibility_results[c.id], skill_detail.get(c.id, ([], [])))
+        _format_candidate_block(job, c, compatibility_results[c.id], skill_detail.get(c.id, ([], [])), salary_ceiling)
         for c in pool
     )
 
-    prompt = f"""Role: {job.title} at {job.company}
-Role briefing: {coarse_brief.get('summary', '')}
+    rubric_section = f"\n{rubric_block}\n" if rubric_block else ""
+    role_target_line = _role_target_line(job)
 
+    prompt = f"""Role: {job.title} at {job.company}
+{role_target_line}
+Role briefing: {coarse_brief.get('summary', '')}
+{rubric_section}
 Candidates to rank ({len(pool)} total, all already passed hard-constraint filtering):
 
 {candidate_blocks}"""
@@ -485,8 +772,17 @@ def fine_rerank(
     compatibility_results: dict[str, CompatibilityResult],
     max_candidates: int | None = None,
     max_workers: int = 1,
+    rubric: dict | None = None,
 ) -> list[dict]:
     """Stage 2: rank the constraint-filtered pool with verdict + rationale.
+
+    `rubric`, if given, is a `mind.rubric_configs` row (see
+    `mind_rubric_store.get_rubric_for_role`) — formatted once here via
+    `_format_rubric_signals` and threaded into every chunk's prompt the same
+    way `coarse_brief` already is, so the LLM judges fit against that role's
+    actual hiring-manager-defined weighted criteria instead of only generic
+    required/preferred skills. None (the default) reproduces today's
+    behavior exactly — no rubric section in the prompt.
 
     Chunks the pool into fixed-size batches (RERANK_BATCH_SIZE) and calls the
     fine-rerank LLM once per chunk. A single call scaling its max_tokens with
@@ -524,19 +820,23 @@ def fine_rerank(
     target_skills = job.required_skills + job.preferred_skills
     skill_detail = skill_match_detail_batch({c.id: c.skills for c in pool}, target_skills)
     skill_coverage_by_id = {c.id: len(skill_detail.get(c.id, ([], []))[0]) for c in pool}
+    rubric_block = _format_rubric_signals(rubric)
+    salary_ceiling = _employer_salary_ceiling(job)
 
     chunks = _chunk(pool, RERANK_BATCH_SIZE)
     if max_workers > 1 and len(chunks) > 1:
         with ThreadPoolExecutor(max_workers=max_workers) as pool_executor:
             batches = list(
                 pool_executor.map(
-                    lambda chunk: _fine_rerank_chunk(job, coarse_brief, chunk, compatibility_results, skill_detail),
+                    lambda chunk: _fine_rerank_chunk(
+                        job, coarse_brief, chunk, compatibility_results, skill_detail, rubric_block, salary_ceiling
+                    ),
                     chunks,
                 )
             )
     else:
         batches = [
-            _fine_rerank_chunk(job, coarse_brief, chunk, compatibility_results, skill_detail)
+            _fine_rerank_chunk(job, coarse_brief, chunk, compatibility_results, skill_detail, rubric_block, salary_ceiling)
             for chunk in chunks
         ]
 
@@ -681,6 +981,25 @@ SKILL_FLOOR_RATIO = 0.4  # eliminate candidates evidencing below this fraction o
 # fresh evidence, so it's left as-is. The real gap this iteration found was the
 # fixed-30 rerank cap silently dropping 98%+ of the filter-passed pool via
 # embedding similarity rather than real judgment (see fine_rerank chunking below).
+#
+# KNOWN EDGE CASE, not fixed (2026-08-03): a ratio floor gets coarse and
+# discipline-blind on a SHORT required_skills list. Live-found on job_order_id
+# 1596 (Calibre) with only 2 extracted required skills ("LLM AI agents",
+# "Full-stack development") — the individual skill matches looked correct on
+# inspection (e.g. a clearly full-stack candidate matched "Full-stack
+# development", correctly missed the AI-specific term), but ~76% of the FULL
+# cross-discipline eligible pool matched neither term at all, since most of
+# that pool was never full-stack/AI-agent people to begin with — skill-floor
+# ended up doing discipline-filtering work it wasn't designed for, on a list
+# too short to carry that signal, collapsing the pool to 34 candidates before
+# fine-rerank ever ran. The already-lenient, already-validated
+# _apply_title_relevance_check below would be the more appropriate filter for
+# a role this thin on required_skills, but it currently runs AFTER (and so is
+# starved by) this gate. Possible fix, not built: only hard-eliminate on
+# SKILL_FLOOR_RATIO when len(required_skills) is large enough for a
+# percentage to be meaningful (e.g. >= 4), same two-tier SIGNAL/ELIMINATION
+# idiom already used for compensation/experience above. Flagged as a known
+# gap rather than fixed — no fresh evidence yet on the right threshold.
 
 
 def _apply_skill_floor_check(
@@ -727,6 +1046,214 @@ def _apply_skill_floor_check(
                 f"Deterministic skill-floor check: candidate evidences only "
                 f"{len(matched)}/{total} ({coverage:.0%}) of required skills "
                 f"(missing: {', '.join(missing)}); below the {SKILL_FLOOR_RATIO:.0%} floor"
+            )
+            cr.eliminated = True
+            newly_eliminated.append((c, cr))
+            continue
+        still_passed.append((c, cr))
+
+    return still_passed, newly_eliminated
+
+
+def _apply_compensation_band_check(
+    job: JobDescription,
+    candidates_with_results: list[tuple[Candidate, CompatibilityResult]],
+) -> tuple[list[tuple[Candidate, CompatibilityResult]], list[tuple[Candidate, CompatibilityResult]]]:
+    """Deterministic safety-net for compensation-band fit — same gap class as
+    _apply_skill_floor_check above, for salary specifically.
+
+    Live-found: candidates already earning well above a role's stated salary
+    ceiling (_employer_salary_ceiling) were reaching fine-rerank as "no
+    candidate constraint found -> compatible", because candidate-side salary
+    is always a SOFT constraint (live_data._build_candidate_constraints) and
+    the generic constraint engine's elimination only fires on the EMPLOYER
+    constraint's hard/soft type — plus canonical-key drift between the
+    employer's LLM-assigned key and the candidate's hardcoded "salary_min"
+    key means canonical/semantic matching can miss the pair entirely even
+    when the employer side IS hard. This checks the number directly instead,
+    the same way the UK/visa check below bypasses canonical-key matching for
+    that dimension.
+
+    Lenient by design (COMPENSATION_ELIMINATION_RATIO), matching
+    _apply_title_relevance_check's philosophy below: only eliminates a
+    clear-cut mismatch. A smaller gap survives with the "Compensation
+    signal" prompt line instead (_compensation_fit_line, COMPENSATION_SIGNAL_RATIO).
+    """
+    ceiling = _employer_salary_ceiling(job)
+    if ceiling is None:
+        return candidates_with_results, []
+    ceiling_value, ceiling_currency = ceiling
+
+    still_passed: list[tuple[Candidate, CompatibilityResult]] = []
+    newly_eliminated: list[tuple[Candidate, CompatibilityResult]] = []
+    for c, cr in candidates_with_results:
+        over_ratio = _salary_over_ratio(c, ceiling)
+        if over_ratio is not None and over_ratio > COMPENSATION_ELIMINATION_RATIO:
+            cand_value = float(_candidate_salary_constraint(c).value)
+            cr.elimination_reasons.append(
+                f"Deterministic compensation-band check: candidate's salary figure on file "
+                f"(~{ceiling_currency}{cand_value:,.0f}) is {over_ratio:.0%} above this role's "
+                f"stated band (up to {ceiling_currency}{ceiling_value:,.0f}) — above the "
+                f"{COMPENSATION_ELIMINATION_RATIO:.0%} tolerance"
+            )
+            cr.eliminated = True
+            newly_eliminated.append((c, cr))
+            continue
+        still_passed.append((c, cr))
+
+    return still_passed, newly_eliminated
+
+
+def _apply_experience_overqualification_check(
+    job: JobDescription,
+    candidates_with_results: list[tuple[Candidate, CompatibilityResult]],
+) -> tuple[list[tuple[Candidate, CompatibilityResult]], list[tuple[Candidate, CompatibilityResult]]]:
+    """Deterministic safety-net for gross overqualification on roles that
+    themselves state a low years-of-experience bar — same gap class as
+    _apply_skill_floor_check above, for job.min_years_experience, which
+    (like skills) is never represented as a Constraint object at all, so the
+    generic constraint engine structurally cannot gate on it either.
+
+    Scoped by job.min_years_experience (EXPERIENCE_GATE_MAX_TARGET_YEARS),
+    NOT job.seniority — see that constant's own comment for why: extraction
+    can label a role "senior" from scope/ownership language even when its
+    stated years bar is low (found live on job_order_id 1596, Calibre — "2+
+    years... ready to operate at a senior level" extracted min_years=2 but
+    plausibly seniority="senior", which would have silently disabled a
+    seniority-gated version of this check entirely, letting 10-19.5 yr
+    candidates keep reaching the top of that role's shortlist). Extra
+    experience relative to a HIGH stated minimum (a genuine senior/lead/
+    principal posting) isn't the failure mode this fixes — that's normal,
+    often desirable — so a high min_years_experience exempts a role
+    regardless of its seniority label too.
+
+    Lenient (EXPERIENCE_ELIMINATION_YEARS), same reasoning as the
+    compensation check above and _apply_title_relevance_check below — a
+    smaller gap survives with the "Experience fit" prompt line instead.
+    Being UNDER the stated minimum is never gated here: years-of-experience
+    is too weak a proxy to eliminate on the low side (a strong junior
+    candidate a year short of a stated minimum is exactly the kind of
+    candidate this pipeline shouldn't be cutting).
+    """
+    if job.min_years_experience <= 0 or job.min_years_experience > EXPERIENCE_GATE_MAX_TARGET_YEARS:
+        return candidates_with_results, []
+
+    still_passed: list[tuple[Candidate, CompatibilityResult]] = []
+    newly_eliminated: list[tuple[Candidate, CompatibilityResult]] = []
+    for c, cr in candidates_with_results:
+        delta = c.years_experience - job.min_years_experience
+        if delta > EXPERIENCE_ELIMINATION_YEARS:
+            cr.elimination_reasons.append(
+                f"Deterministic experience-overqualification check: candidate has "
+                f"{c.years_experience:.0f} yrs experience, {delta:.0f} yrs above this "
+                f"role's stated {job.min_years_experience}+ yr minimum — "
+                f"above the {EXPERIENCE_ELIMINATION_YEARS}-yr tolerance"
+            )
+            cr.eliminated = True
+            newly_eliminated.append((c, cr))
+            continue
+        still_passed.append((c, cr))
+
+    return still_passed, newly_eliminated
+
+
+# remote=0 / onsite=5 days-per-week equivalents — "hybrid"/"flexible" are
+# deliberately left unmapped (None): a "hybrid" preference could mean 1 day
+# or 4, so there's no single number to compare against an employer's stated
+# office_days_per_week without guessing. Only a candidate with an
+# UNAMBIGUOUS category (fully remote or fully onsite) that structurally
+# cannot satisfy what the employer stated gets evaluated at all.
+_WORKING_MODEL_DAYS = {"remote": 0.0, "onsite": 5.0}
+
+
+# Bullhorn's onSite field values, normalized (lowercased, hyphens/spaces
+# stripped) -> (days, operator) fallback when the JD prose states no explicit
+# office-days figure at all. "Hybrid" is deliberately left unmapped, same
+# reasoning as _WORKING_MODEL_DAYS above — no single day-count to infer.
+_BULLHORN_ONSITE_REQUIREMENT = {
+    "onsite": (5.0, ConstraintOperator.requires),
+    "remote": (0.0, ConstraintOperator.max),
+}
+
+
+def _office_days_requirement(job: JobDescription) -> tuple[float, ConstraintOperator] | None:
+    """The employer's office-attendance requirement, if any — JD-text
+    constraint first (specific, e.g. "3 days/week"), falling back to
+    Bullhorn's structured `onSite` field otherwise.
+
+    Live-found on job_order_id 1596 (Calibre): JD prose stated no explicit
+    office requirement, but the ATS's own onSite field says "On-Site" — a
+    role that's genuinely fully in-office had nothing for the JD-text path
+    to find. Same "structured field beats LLM-noticed prose" reasoning as
+    _employer_salary_ceiling's Bullhorn fallback.
+    """
+    for c in job.constraints:
+        if c.canonical_key == "office_days_per_week" and isinstance(c.value, (int, float)):
+            return float(c.value), c.operator
+
+    if job.bullhorn_working_model:
+        normalized = job.bullhorn_working_model.lower().replace("-", "").replace(" ", "")
+        return _BULLHORN_ONSITE_REQUIREMENT.get(normalized)
+
+    return None
+
+
+def _apply_working_model_check(
+    job: JobDescription,
+    candidates_with_results: list[tuple[Candidate, CompatibilityResult]],
+) -> tuple[list[tuple[Candidate, CompatibilityResult]], list[tuple[Candidate, CompatibilityResult]]]:
+    """Deterministic safety-net for working-model fit — same gap class as the
+    other _apply_*_check gates above, but for a dimension the GENERIC
+    constraint engine was already supposed to cover and structurally cannot.
+
+    Investigated live (2026-08-03): the employer side's office-days
+    requirement is extracted with canonical_key="office_days_per_week" and a
+    NUMERIC value (e.g. 3.0), matching extraction.py's own few-shot example.
+    The candidate side is hardcoded to canonical_key="working_arrangement"
+    with a CATEGORICAL value ("remote"/"hybrid"/"onsite"/"flexible") in
+    live_data._build_candidate_constraints. Two compounding failures, both
+    confirmed directly against constraint_engine.py:
+    1. canonical_key_match() returns None for this pair — the keys never
+       match, so phase 1 never fires (same class of drift already found and
+       fixed for UK/visa and salary).
+    2. Even forcing a match, _evaluate_operator_pair(requires 3.0, prefers
+       "remote") returns (compatible=True, score=0.6) — it can't numerically
+       compare a day-count against a category string, so it falls into a
+       generic fallback that treats the mismatch as weakly compatible rather
+       than a real conflict. A HARD onsite requirement structurally cannot
+       eliminate a fully-remote candidate through this path, in any run.
+
+    This sidesteps both failures with a direct numeric comparison, the same
+    shape as _apply_compensation_band_check above. Only fires on an
+    UNAMBIGUOUS candidate category (remote or onsite — see
+    _WORKING_MODEL_DAYS) against an employer constraint with a real number;
+    "hybrid"/"flexible" candidates, or roles with no office_days_per_week
+    constraint at all, pass through untouched (same "no clear data = don't
+    eliminate" posture as every other gate here).
+    """
+    requirement = _office_days_requirement(job)
+    if requirement is None:
+        return candidates_with_results, []
+    required_days, operator = requirement
+
+    still_passed: list[tuple[Candidate, CompatibilityResult]] = []
+    newly_eliminated: list[tuple[Candidate, CompatibilityResult]] = []
+    for c, cr in candidates_with_results:
+        wc = next((con for con in c.constraints if con.canonical_key == "working_arrangement"), None)
+        candidate_days = _WORKING_MODEL_DAYS.get(str(wc.value).lower()) if wc and wc.value else None
+        if candidate_days is None:
+            still_passed.append((c, cr))
+            continue
+
+        incompatible = (
+            operator in (ConstraintOperator.requires, ConstraintOperator.min) and candidate_days < required_days
+        ) or (operator == ConstraintOperator.max and candidate_days > required_days)
+
+        if incompatible:
+            cr.elimination_reasons.append(
+                f"Deterministic working-model check: role requires {required_days:.0f} "
+                f"office day(s)/week ({operator.value}), candidate is {wc.value} "
+                f"({candidate_days:.0f} day(s)/week equivalent) — incompatible"
             )
             cr.eliminated = True
             newly_eliminated.append((c, cr))
@@ -893,6 +1420,8 @@ def run_live_pipeline(job_order_id: int, candidate_limit: int | None = None, rer
     job = parse_job_description(
         job_raw["raw_text"], job_id=job_raw["id"], title=job_raw["title"], company=job_raw["company"]
     )
+    job.bullhorn_salary = job_raw.get("salary")
+    job.bullhorn_working_model = job_raw.get("working_model")
 
     index = candidate_index.get_cached()
     candidates = index.all_candidates()
@@ -917,6 +1446,15 @@ def run_live_pipeline(job_order_id: int, candidate_limit: int | None = None, rer
 
     passed, skill_eliminated = _apply_skill_floor_check(job, passed)
     eliminated.extend(skill_eliminated)
+
+    passed, compensation_eliminated = _apply_compensation_band_check(job, passed)
+    eliminated.extend(compensation_eliminated)
+
+    passed, experience_eliminated = _apply_experience_overqualification_check(job, passed)
+    eliminated.extend(experience_eliminated)
+
+    passed, working_model_eliminated = _apply_working_model_check(job, passed)
+    eliminated.extend(working_model_eliminated)
 
     title_embeddings = {c.id: index.get_title_embedding(c.id) for c, _ in passed}
     title_embeddings = {cid: emb for cid, emb in title_embeddings.items() if emb is not None}
@@ -944,7 +1482,21 @@ def run_live_pipeline(job_order_id: int, candidate_limit: int | None = None, rer
         retrieved = retrieve_top_k(job, pool_index, top_k=rerank_limit, min_similarity=0.0)
         rerank_pool = [c for c, _similarity in retrieved]
 
-    ranked_raw = fine_rerank(job, coarse, rerank_pool, compat_by_id)
+    # Best-effort: Mind's per-role weighted rubric (mind.rubric_configs), if
+    # one exists for this role, gets injected into the fine-rerank prompt —
+    # see _format_rubric_signals. A missing/unreachable rubric (no Supabase
+    # creds, no rubric configured for this role, network error) degrades to
+    # the pipeline's existing generic-prompt behavior rather than failing the
+    # whole run; the rubric is an enhancement to fine-rerank, not a
+    # dependency of it.
+    try:
+        from . import mind_rubric_store
+        rubric = mind_rubric_store.get_rubric_for_role(job_order_id)
+    except Exception as exc:
+        print(f"    [rubric] lookup failed, continuing without a rubric: {exc}", flush=True)
+        rubric = None
+
+    ranked_raw = fine_rerank(job, coarse, rerank_pool, compat_by_id, rubric=rubric)
 
     candidates_by_id = {c.id: c for c, _ in passed}
     ranked = []
@@ -984,6 +1536,16 @@ def run_live_pipeline(job_order_id: int, candidate_limit: int | None = None, rer
             "preferred_skills": job.preferred_skills,
         },
         "coarse_brief": coarse,
+        "rubric_used": (
+            {
+                "rubric_id": rubric["rubric_id"],
+                "version": rubric["version"],
+                "role_specific": rubric.get("role_id") == job_order_id,
+                "signal_count": len(rubric.get("signals") or []),
+            }
+            if rubric
+            else None
+        ),
         "ranked": ranked,
         "eliminated": [
             {"candidate_id": c.id, "name": c.name, "reasons": cr.elimination_reasons}
@@ -1005,7 +1567,9 @@ def run_llm_only_pipeline(job_order_id: int, candidate_limit: int | None = None)
 
     Deliberately skips, relative to run_live_pipeline:
     - constraint_engine.run_constraint_engine (hard-constraint filtering)
-    - _apply_skill_floor_check / _apply_title_relevance_check / _apply_location_visa_check
+    - _apply_skill_floor_check / _apply_compensation_band_check /
+      _apply_experience_overqualification_check / _apply_working_model_check /
+      _apply_title_relevance_check / _apply_location_visa_check
     - coarse_role_brief (the coarse LLM framing call)
     - the Haiku triage_candidates bucketing
     - the embedding-similarity top-K trim
@@ -1027,10 +1591,11 @@ def run_llm_only_pipeline(job_order_id: int, candidate_limit: int | None = None)
     Mind's own reranker measured the opposite in Node.js).
 
     Returns the exact same shape as run_live_pipeline (job/coarse_brief/
-    ranked/eliminated/candidates_considered/candidates_indexed/
+    rubric_used/ranked/eliminated/candidates_considered/candidates_indexed/
     candidates_passed_filter/candidates_reranked) so it's a drop-in for
     llm_only_run_store and the existing LiveRecommendResult UI types —
-    `eliminated` is always [] here (nothing was filtered) and
+    `eliminated` is always [] here (nothing was filtered), `rubric_used` is
+    always None (no rubric lookup — see the module-level comparison doc), and
     candidates_considered/candidates_indexed/candidates_passed_filter/
     candidates_reranked are all the same number (the full pool).
     """
@@ -1041,6 +1606,8 @@ def run_llm_only_pipeline(job_order_id: int, candidate_limit: int | None = None)
     job = parse_job_description(
         job_raw["raw_text"], job_id=job_raw["id"], title=job_raw["title"], company=job_raw["company"]
     )
+    job.bullhorn_salary = job_raw.get("salary")
+    job.bullhorn_working_model = job_raw.get("working_model")
 
     index = candidate_index.get_cached()
     pool = index.all_candidates()
@@ -1082,6 +1649,7 @@ def run_llm_only_pipeline(job_order_id: int, candidate_limit: int | None = None)
             "preferred_skills": job.preferred_skills,
         },
         "coarse_brief": {},
+        "rubric_used": None,  # deliberately skipped — see run_llm_only_pipeline's docstring
         "ranked": ranked,
         "eliminated": [],
         "candidates_considered": len(pool),

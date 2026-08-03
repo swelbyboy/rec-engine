@@ -130,12 +130,22 @@ def fetch_active_mind_roles(limit: int = 30) -> list[dict]:
 
 
 def fetch_job_raw(job_order_id: int) -> dict:
-    """Fetch a job order's title/company/raw text (description + Bullhorn briefing).
+    """Fetch a job order's title/company/raw text (description + Bullhorn briefing)
+    plus its structured salary figure.
 
     Bullhorn's JobOrder entity carries two free-text fields inside `raw_data`:
     `description` (the internal brief written after intake — what's referred to
     as the "job briefing") and `publicDescription` (the external job-ad copy).
     Both are combined into raw_text so extraction sees the full picture.
+
+    `salary` (raw_data.salary, a single GBP figure — no separate currency field
+    on this entity; every job order in this tenant is GBP) is the ATS's own
+    structured budget figure, set by whoever created the job order — separate
+    from, and more reliably present than, whatever an LLM might notice in the
+    free-text JD/briefing prose. Spot-checked live across all 7 currently-pinned
+    roles: every one has this field populated, vs. only 1 of 7 stating an
+    explicit salary band in its JD text. None when the field is 0/absent (a
+    genuinely unset job order, not a real zero-salary role).
     """
     rows = _get(
         "bullhorn_job_orders",
@@ -161,11 +171,25 @@ def fetch_job_raw(job_order_id: int) -> dict:
     public_jd = _strip_html(raw_data.get("publicDescription") or "")
     raw_text = "\n\n---\n\n".join(part for part in (public_jd, briefing) if part)
 
+    salary = raw_data.get("salary")
+    salary = float(salary) if isinstance(salary, (int, float)) and salary > 0 else None
+
+    # Bullhorn's own onSite field (e.g. "On-Site" / "Remote" / "Hybrid") —
+    # a structured working-model signal, same "trust the ATS field over
+    # LLM-noticed JD prose" reasoning as `salary` above. Spot-checked live
+    # on job_order_id 1596 (Calibre): the JD prose states no explicit office
+    # requirement at all, but this field says "On-Site" — without this
+    # fallback, funnel_rerank._apply_working_model_check has nothing to gate
+    # on for a role that's actually fully onsite.
+    working_model = raw_data.get("onSite") or None
+
     return {
         "id": str(job_order_id),
         "title": row.get("title") or "",
         "company": company or "",
         "raw_text": raw_text,
+        "salary": salary,
+        "working_model": working_model,
     }
 
 
@@ -313,7 +337,23 @@ def _build_candidate_constraints(row: dict) -> list[Constraint]:
     constraints: list[Constraint] = []
     cid = str(row["candidate_id"])
 
-    if row.get("salary_normalized"):
+    # salary_type in {contract_day, contract_hourly}: salary_normalized is a
+    # day/hourly RATE, not an annual figure — building a "salary_min" floor
+    # constraint from it would compare, e.g., a £600 day rate against an
+    # annual salary band as if it were £600/year (reads as wildly UNDER any
+    # real ceiling, silently hiding an actually-expensive contractor rather
+    # than flagging one). Mind's own scoring engine carves this out explicitly
+    # (mind/apps/web/src/lib/matching/scoring-engine.ts:874-887 — "comparing a
+    # £500/day contractor against a £100k/year permanent budget is
+    # meaningless and would false-reject every contractor"). ~7% of the
+    # eligible pool (153/2138 candidates) is contract_day/contract_hourly —
+    # skipping constraint creation entirely here means both the constraint
+    # engine's general salary matching and funnel_rerank's compensation-band
+    # gate correctly treat these candidates as "no comparable salary data"
+    # (the existing no-data-is-compatible default) instead of comparing rates
+    # across incompatible units.
+    is_contractor = row.get("salary_type") in ("contract_day", "contract_hourly")
+    if row.get("salary_normalized") and not is_contractor:
         constraints.append(Constraint(
             id=f"{cid}-salary", type=ConstraintType.soft, side=ConstraintSide.candidate,
             category="compensation", canonical_key="salary_min",

@@ -64,6 +64,22 @@ class JobDescription(BaseModel):
     industries_acceptable: list[str] = []
     constraints: list[Constraint] = []
     discipline: Discipline = "other"
+    # The ATS's own structured job-order salary figure (app.bullhorn_job_orders.
+    # raw_data.salary via Mothership, GBP), set separately from `constraints`
+    # (which only ever holds what an LLM noticed in the free-text JD/briefing).
+    # Populated by live_data.fetch_job_raw + run_live_pipeline — None for the
+    # fixture/synthetic-JD path, where there's no ATS record to read. See
+    # funnel_rerank._employer_salary_ceiling's fallback for why this exists:
+    # most real job orders state no explicit band in the JD prose at all, so a
+    # ceiling derived only from `constraints` was a silent no-op for most roles.
+    bullhorn_salary: float | None = None
+    # The ATS's own structured working-model field (raw_data.onSite, e.g.
+    # "On-Site" / "Remote" / "Hybrid") — same rationale as bullhorn_salary
+    # above: most real JD prose never states an explicit office-days
+    # requirement, so a role can be genuinely fully-onsite with nothing for
+    # funnel_rerank._apply_working_model_check's JD-text-derived check to
+    # find. Populated by live_data.fetch_job_raw + run_live_pipeline.
+    bullhorn_working_model: str | None = None
 
 
 class Candidate(BaseModel):

@@ -25,9 +25,9 @@ can be judged side by side against what Mind produces today.
 | | **Mind Live** | **Mind Fixed** | **rec-engine PoC** | **rec-engine LLM-only** |
 |---|---|---|---|---|
 | **Where it lives** | Read-only via `mind.shortlist_runs` / `mind.shortlist_run_candidates` (production `main`/`staging`) | `mind-fix-legacy-score` worktree, branch `fix/legacy-score-default` — **unmerged, not deployed** | `run_live_pipeline` (`src/funnel_rerank.py`) | `run_llm_only_pipeline` (`src/funnel_rerank.py`), own store/routes (`llm_only_run_store.py`, `/api/llm-only/*`) |
-| **How it works** | Deterministic precise gates (exact YoE/comp/notice/title-family) build the pool → recency-ordered into Haiku triage → one batched Sonnet call scored against a role-specific weighted rubric (`mind.rubric_configs`); the 18 soft signals are computed but **dormant** under `scoringMode: 'gates-only'` | Identical to Mind Live except one flag: `scoringMode: 'legacy-score'`, which makes the 18 soft signals load-bearing again instead of dormant. Everything else — gates, triage, batched Sonnet call, rubric weighting — unchanged | Automated constraint extraction + 3-phase constraint engine → deterministic skill-floor gate → lenient title/discipline gate → location/visa check → coarse LLM role brief → recency-ordered Haiku triage (chunks, 6-way concurrent) → best-bucket selection, truncated in pool order → chunked Sonnet fine-rerank (batches of 32, verdict-tier merge) | Same eligible pool as the PoC, but skips every filtering/triage/truncation stage — every eligible candidate goes straight into the same chunked Sonnet fine-rerank, run with 8-way concurrency instead of serial |
+| **How it works** | Deterministic precise gates (exact YoE/comp/notice/title-family) build the pool → recency-ordered into Haiku triage → one batched Sonnet call scored against a role-specific weighted rubric (`mind.rubric_configs`); the 18 soft signals are computed but **dormant** under `scoringMode: 'gates-only'` | Identical to Mind Live except one flag: `scoringMode: 'legacy-score'`, which makes the 18 soft signals load-bearing again instead of dormant. Everything else — gates, triage, batched Sonnet call, rubric weighting — unchanged | Automated constraint extraction + 3-phase constraint engine → deterministic skill-floor gate → lenient title/discipline gate → location/visa check → coarse LLM role brief → best-effort `mind.rubric_configs` lookup → recency-ordered Haiku triage (chunks, 6-way concurrent) → best-bucket selection, truncated in pool order → chunked Sonnet fine-rerank (batches of 32, rubric-aware prompt when found, verdict-tier merge) | Same eligible pool as the PoC, but skips every filtering/triage/truncation stage (including the rubric lookup) — every eligible candidate goes straight into the same chunked Sonnet fine-rerank, run with 8-way concurrency instead of serial |
 | **Candidate pool** | Mind's own "Available candidates" funnel, already narrowed further by `computePool` before it's ever recorded — recorded pool sizes (e.g. 54, 64 for role 1360) are late-stage, not the true universe | Same as Mind Live (same gates, same `computePool`) — but empirically drifts run to run (58% overlap with Mind Live for the same role, days apart) | Deterministic reproduction of Mind's "Available candidates" funnel (`live_data._ELIGIBILITY_FILTER`): `is_uk` + `has_cv` + `linkedin_url` + `has_prescreen_notes` + `mind_eligible_since ≥ 2026-01-01`, minus active Bullhorn submissions. 2,138 candidates vs. Mind's reported 2,107 (1.5% off, ~81% recall on a cross-checked sample) | Identical pool to the PoC (2,138) — deliberately equalized so pool-construction effects can't explain any output difference |
-| **LLM ranking** | Haiku triage → **one single batched Sonnet call per run**, scored against per-role weighted rubric percentages | Same as Mind Live | Haiku triage (`TRIAGE_TOP_N = 100` cutover) → Sonnet fine-rerank, **chunked** (`RERANK_BATCH_SIZE = 32`, serial by default), generic required/preferred-skills criteria — **no per-role rubric weights** | Same chunked Sonnet fine-rerank as the PoC, same generic criteria, but every candidate reaches it (no triage bucket, no truncation) |
+| **LLM ranking** | Haiku triage → **one single batched Sonnet call per run**, scored against per-role weighted rubric percentages | Same as Mind Live | Haiku triage (`TRIAGE_TOP_N = 100` cutover) → Sonnet fine-rerank, **chunked** (`RERANK_BATCH_SIZE = 32`, serial by default), prompt carries the role's `mind.rubric_configs` signals when one is found (falls back to generic required/preferred-skills criteria otherwise) — verdict scheme stays rec-engine's own `strong_match`/`good_match`/`possible`/`weak_match`, not Mind's per-signal deterministic score | Same chunked Sonnet fine-rerank as the PoC, same generic criteria (rubric lookup deliberately skipped, see below), but every candidate reaches it (no triage bucket, no truncation) |
 | **Rationale** | N/A — this is what's actually in production today; the baseline everything else is measured against | Tests whether restoring the pre-redesign scorer (proposed but never built) fixes the regression, without touching anything else | Prototypes a non-manual-gate alternative to Mind's filtering, while deliberately porting Mind's own validated LLM-ranking shape (batch size, triage cutover, Sonnet-not-Haiku for fine scoring) rather than reinventing it | Isolates one variable: does rec-engine's *own* prefiltering explain its divergence from Mind, or does the gap persist even with an unfiltered pool reaching the same ranker? |
 
 ## Mind Live
@@ -170,6 +170,19 @@ correctly stamped `scorer_version: v7-legacy-score-default`.
    required skills. This is the single biggest cut in the funnel: for role
    1650 (12 required skills), 1,326 of 2,138 eligible candidates were
    eliminated here, the large majority for evidencing 0-4/12 skills.
+4.5. **Deterministic compensation-band gate** (`_apply_compensation_band_check`,
+    `COMPENSATION_ELIMINATION_RATIO = 0.20`) — eliminates candidates whose
+    salary figure on file is >20% above the role's stated salary ceiling
+    (found via `_employer_salary_ceiling`, not canonical-key matching — see
+    "Fixes made along the way" below). Lenient by design: a smaller gap
+    survives with a "Compensation signal" fine-rerank prompt line instead.
+4.6. **Deterministic experience-overqualification gate**
+    (`_apply_experience_overqualification_check`,
+    `EXPERIENCE_ELIMINATION_YEARS = 6`) — on roles whose stated minimum
+    years of experience is itself low (`EXPERIENCE_GATE_MAX_TARGET_YEARS = 3`
+    — keyed off the stated *number*, not the `job.seniority` label; see
+    "Fixes made along the way" below for why), eliminates candidates >6 yrs
+    past that minimum. Never fires for being under the minimum.
 5. **Title/discipline gate** (`_apply_title_relevance_check`) — lenient,
    title-text-only embedding similarity, low elimination floor; catches
    only genuinely wrong-discipline candidates, never an adjacent one.
@@ -189,13 +202,20 @@ correctly stamped `scorer_version: v7-legacy-score-default`.
    degrades, so it's a deliberate parity choice, not an oversight — but
    worth knowing when a specific candidate is missing from a large role's
    rerank pool.
+9.5. **Mind rubric lookup** (`mind_rubric_store.get_rubric_for_role`) — a
+    best-effort read of `mind.rubric_configs` for this role (role-specific
+    row, falling back to a global `role_id IS NULL` template, else none).
+    Formatted (`_format_rubric_signals`) and threaded into the fine-rerank
+    prompt below the same way `coarse_role_brief` is — role-level context
+    computed once, reused by every chunk.
 10. **Sonnet fine-rerank** (`fine_rerank`, `FINE_RERANK_MODEL =
     claude-sonnet-5`) — chunks of `RERANK_BATCH_SIZE = 32`, serial by
     default, each a forced tool-use call producing
     `strong_match`/`good_match`/`possible`/`weak_match` verdicts +
-    rationale per candidate, judged against fixed role criteria (not
-    batch-relative). Merged by verdict tier, then skill-coverage count as
-    tiebreak.
+    rationale per candidate, judged against fixed role criteria — now
+    including the role's weighted rubric signals when one was found, not
+    just generic required/preferred skills (not batch-relative either way).
+    Merged by verdict tier, then skill-coverage count as tiebreak.
 
 ```mermaid
 flowchart TD
@@ -203,14 +223,17 @@ flowchart TD
     B --> C["Eligible pool: 2,138<br/>ordered by date_added desc (recency)"]
     C --> D["3-phase constraint engine<br/>canonical-key → semantic fallback → compatible-by-default<br/>(salary / notice / visa / working-model only — no skills)"]
     D --> E["Deterministic skill-floor gate<br/>SKILL_FLOOR_RATIO = 0.4<br/>biggest single cut in the funnel"]
-    E --> F["Title/discipline gate<br/>lenient, title-text embedding similarity"]
+    E --> E2["Deterministic compensation-band gate<br/>COMPENSATION_ELIMINATION_RATIO = 0.20"]
+    E2 --> E3["Deterministic experience-overqualification gate<br/>stated min ≤ 3 yrs, EXPERIENCE_ELIMINATION_YEARS = 6"]
+    E3 --> F["Title/discipline gate<br/>lenient, title-text embedding similarity"]
     F --> G["Location/visa check"]
     G --> H["Coarse role brief<br/>LLM one-line framing call"]
-    H --> I{"More than 100 candidates<br/>passed the filters?"}
+    H --> H2["mind.rubric_configs lookup<br/>role-specific → global template → none<br/>best-effort, degrades to generic prompt"]
+    H2 --> I{"More than 100 candidates<br/>passed the filters?"}
     I -- yes --> J["Haiku triage<br/>chunks of 40, 6-way concurrent<br/>buckets: strong / maybe / no"]
     J --> K["select_by_coarse_bucket<br/>best non-empty bucket, top_n=200<br/>truncated in POOL ORDER (recency), not by fit"]
     I -- no --> K
-    K --> L["Sonnet fine-rerank<br/>RERANK_BATCH_SIZE=32, serial chunks<br/>verdict: strong/good/possible/weak_match"]
+    K --> L["Sonnet fine-rerank<br/>RERANK_BATCH_SIZE=32, serial chunks<br/>role rubric signals + verdict: strong/good/possible/weak_match"]
     L --> M["Merge by verdict tier,<br/>then skill-coverage tiebreak"]
     M --> N["Shortlist"]
 ```
@@ -265,14 +288,39 @@ fixed role criteria, not a batch-relative ranking — so merging by verdict
 tier, then by already-computed skill-coverage count as a tiebreaker, is
 valid without redesigning the scoring rubric or tool schema.
 
-**Why Mind's per-role rubric weighting was not ported (yet).** Mind's
-Sonnet call is scored against a weighted rubric pulled from
-`mind.rubric_configs` (see the Mind Live rubric example above — skill
-match is only 10% of one role's score). rec-engine's fine-rerank prompt
-only ever carries generic required/preferred skills, with no visibility
-into what a role's shortlist should actually be optimizing for. This is
-now understood to be a real, not cosmetic, source of divergence — see
-rec-engine LLM-only below.
+**Mind's per-role rubric weighting IS now ported — the fix this branch's own
+analysis called for.** Mind's Sonnet call is scored against a weighted
+rubric pulled from `mind.rubric_configs` (see the Mind Live rubric example
+above — skill match is only 10% of one role's score). rec-engine's
+fine-rerank prompt used to carry only generic required/preferred skills,
+with no visibility into what a role's shortlist should actually be
+optimizing for — confirmed a real, not cosmetic, source of divergence (see
+rec-engine LLM-only below). `mind_rubric_store.get_rubric_for_role`
+(`src/mind_rubric_store.py`) reads the same `mind.rubric_configs` table via
+the same read-only PostgREST/`Accept-Profile: mind` path `mind_run_store.py`
+already uses, resolves the role-specific row (falling back to a reusable
+`role_id IS NULL` global template, then to nothing) if it has the current
+`signals` shape populated, and `funnel_rerank.fine_rerank` injects it into
+every chunk's prompt exactly the way `coarse_role_brief` already gets
+injected — same "role-level context computed once, threaded through every
+chunk" shape, same graceful degradation to today's generic prompt if no
+rubric is configured for a role or Mind's schema isn't reachable.
+
+**What was deliberately NOT ported along with it.** Mind's reranker has the
+LLM emit a `strong`/`partial`/`absent`/`violated` verdict *per signal* and
+computes the weighted 0-10 score deterministically afterward
+(`signal-scoring.ts`) — a second scoring pipeline and a different tool
+schema. Porting that would mean redesigning `FINE_RERANK_TOOL_SCHEMA` and
+`_merge_ranked_batches`' verdict-tier merge, which is exactly the kind of
+rescoring-pipeline change the "absolute/boost-only scoring rubric" section
+above already explains isn't needed here. Instead, `_format_rubric_signals`
+only reshapes the *prompt* — the rubric's signals (id/label/tier/weight/
+guidance, plus any gating signals) are listed as the criteria to judge fit
+against, with an explicit instruction to weight them over generic skill
+overlap, but the LLM still returns rec-engine's own
+`strong_match`/`good_match`/`possible`/`weak_match` verdict + rationale, and
+`_merge_ranked_batches` is untouched. Small, concrete, and reversible — not
+the rearchitecture Mind's own scoring pipeline would require.
 
 ## rec-engine LLM-only
 
@@ -292,6 +340,10 @@ verdict-tier merge).
 - No skill-floor / title-relevance / location checks
 - No coarse role brief (blank "Role briefing:" line in the prompt — an
   honest gap, not a fabricated one)
+- No `mind.rubric_configs` lookup (`rubric_used` is always `null` in the
+  response) — deliberately, to keep this pipeline's one isolated variable
+  (rec-engine's own prefiltering) from being conflated with the separate
+  rubric-visibility question
 - No Haiku triage, no bucket truncation
 
 Every one of the 2,138 candidates goes straight into `fine_rerank`, with a
@@ -340,6 +392,83 @@ blindness), not a filtering artifact.
 
 These apply to both rec-engine pipelines, since PoC and LLM-only share the
 same `fine_rerank` implementation.
+
+**Fine-rerank had no explicit seniority/experience target or salary-band
+signal, and its system prompt actively told the model salary was already
+handled.** Found live: a junior/mid role (CoLoop Product Engineer, £70K-£90K,
+1+ yrs) surfaced 10+-YoE candidates already earning £110-120k near the top.
+Root cause, confirmed against live data: (1) `job.min_years_experience` /
+`job.seniority` were extracted but never made it into the fine-rerank
+prompt at all — only the coarse role brief's free-text summary might
+mention them incidentally; (2) `FINE_RERANK_SYSTEM` explicitly claimed
+"salary range... already been checked — do not re-litigate", which is
+false — candidate-side salary is always a soft constraint
+(`live_data._build_candidate_constraints`), and elimination only fires on
+the *employer* constraint's hard/soft type, so a real mismatch can (and, in
+this case, did) sail through as "no candidate constraint found ->
+compatible" even with the number sitting right there. Fixed by adding two new deterministic gates,
+`_apply_compensation_band_check` and `_apply_experience_overqualification_check`
+— the same shape as `_apply_skill_floor_check`/`_apply_title_relevance_check`:
+`job.min_years_experience`/`job.seniority` (like skills) are never
+represented as `Constraint` objects at all, so the generic constraint engine
+structurally cannot gate on them either, and salary specifically also hits
+the canonical-key-drift failure already fixed for the UK/visa check (the
+employer's LLM-assigned key isn't guaranteed to match the candidate's
+hardcoded `"salary_min"` key). `_employer_salary_ceiling` sidesteps that by
+keying off `currency is not None` instead (extraction.py's own schema
+documents `currency` as reliably set only for salary constraints). Lenient
+two-tier thresholds, same philosophy as `SKILL_FLOOR_RATIO`/
+`TITLE_RELEVANCE_FLOOR`: `COMPENSATION_ELIMINATION_RATIO`/
+`EXPERIENCE_ELIMINATION_YEARS` deterministically eliminate only a clear-cut
+mismatch (live-validated: both real over-band CoLoop candidates, 33%/22%
+over the stated ceiling, correctly excluded); a smaller gap under that
+threshold survives to fine-rerank instead, surfaced via two computed,
+non-inferred prompt lines (`_candidate_experience_fit_line`,
+`_compensation_fit_line`, own lower `SIGNAL` thresholds) mirroring the
+already-validated "Role skill fit" line shape — plus correcting
+`FINE_RERANK_SYSTEM`'s previously-false "already checked" claim about
+salary. The experience gate only applies to junior/mid roles (extra
+experience isn't a problem on a senior/lead/principal posting) and never
+fires for being UNDER the stated minimum — years-of-experience is too weak
+a proxy to eliminate on the low side.
+
+**First version of the compensation-band gate still let a real over-band
+candidate through.** `_employer_salary_ceiling`'s first cut only counted
+`type == hard` constraints as a ceiling — deliberately, to avoid producing
+a hard-sounding "above the band" line off a constraint the JD extraction
+call happened to mark soft. In practice this reintroduced the exact problem
+the gate exists to route around: whether a stated range like "£70K-£90K"
+reads as a strict cap or an advertised range is itself an inconsistent LLM
+judgment call, so on a run where extraction landed on `soft` for that
+constraint, the gate silently found no ceiling at all and did nothing —
+confirmed live on job_order_id 1409, where a real over-band candidate
+(Chris Arderne, £120k vs the £90k ceiling) still wasn't excluded despite
+the gate being live and the candidate index having the correct, current
+salary data (checked directly — not a stale-index problem). Fixed by
+dropping the `type == hard` requirement entirely: any currency-bearing
+constraint is only ever produced for an actually-stated compensation
+figure (extraction.py's few-shot examples never infer one), so hard or
+soft, it's valid ceiling evidence.
+
+**Experience-overqualification gate scoped on `job.seniority` let 10-19.5 yr
+candidates through a role that explicitly asked for 2+ years.** Same root
+cause pattern as the fix above: `_apply_experience_overqualification_check`
+originally only ran when `job.seniority in ("junior", "mid")`, on the
+assumption that extra experience is only a problem on a role labeled that
+way. job_order_id 1596 (Calibre, "2+ years of professional experience...
+ready to operate at a senior level. This isn't a typical junior role")
+broke that assumption live: that framing plausibly gets `job.seniority`
+extracted as `"senior"` — a categorical field the model derives from
+tone/scope language — even though `min_years_experience` correctly stays
+2, a directly-stated number. Gating on the categorical field silently
+disabled the whole check for this role; five real candidates (11, 19.5, 10,
+16, 15 yrs) all still reached the top of the shortlist. Fixed by re-scoping
+the check on `job.min_years_experience <= EXPERIENCE_GATE_MAX_TARGET_YEARS`
+(3) instead of the seniority label — the number the JD actually states, not
+a derived category — applied consistently in both the elimination gate and
+the "Experience fit" prompt line (`_candidate_experience_fit_line` had the
+identical bug). Re-verified against the exact Calibre scenario: all five
+candidates now correctly excluded.
 
 **Sonnet 5 rejects any non-default sampling params.** An earlier attempt to
 pin `temperature=0.0` on the fine-rerank call for determinism was actually

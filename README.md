@@ -110,6 +110,7 @@ rec-engine/
 │   ├── live_run_store.py      # Persists rec-engine PoC runs
 │   ├── llm_only_run_store.py  # Persists rec-engine LLM-only runs
 │   ├── mind_run_store.py      # Reads Mind Live/Fixed runs (read-only, live Supabase)
+│   ├── mind_rubric_store.py   # Reads Mind's per-role weighted rubric (mind.rubric_configs), injected into fine-rerank
 │   └── api.py                 # FastAPI backend — /live/*, /llm-only/*, /recommend (fixture demo)
 ├── ui/                        # Vite + React comparison UI (Live PoC tab, Analysis tab)
 ├── docs/
